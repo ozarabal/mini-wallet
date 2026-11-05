@@ -29,6 +29,25 @@ class OpenApiIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void docsDeclareBearerAuthenticationAndMarkOnlyTheAuthEndpointsAsPublic() {
+        JsonNode docs = rest.getForObject("/v3/api-docs", JsonNode.class);
+
+        JsonNode scheme = docs.get("components").get("securitySchemes").get("bearerAuth");
+        assertThat(scheme.get("type").asText()).isEqualTo("http");
+        assertThat(scheme.get("scheme").asText()).isEqualTo("bearer");
+        assertThat(scheme.get("bearerFormat").asText()).isEqualTo("JWT");
+
+        // protected by default: the bearer scheme is required at the document root, and an operation inherits it
+        // unless it says otherwise
+        assertThat(docs.get("security").get(0).has("bearerAuth")).isTrue();
+        assertThat(docs.get("paths").get("/api/v1/transfers").get("post").has("security")).isFalse();
+
+        // login and register are public: an explicitly empty requirement
+        assertThat(docs.get("paths").get("/api/v1/auth/login").get("post").get("security")).isEmpty();
+        assertThat(docs.get("paths").get("/api/v1/auth/register").get("post").get("security")).isEmpty();
+    }
+
+    @Test
     void healthAndPrometheusEndpointsAreExposed() {
         assertThat(rest.getForObject("/actuator/health", JsonNode.class).get("status").asText()).isEqualTo("UP");
         assertThat(rest.getForObject("/actuator/prometheus", String.class)).contains("jvm_memory_used_bytes");

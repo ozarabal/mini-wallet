@@ -3,6 +3,7 @@ package com.rafif.wallet.transfer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.rafif.wallet.AbstractIntegrationTest;
+import com.rafif.wallet.support.TestUser;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -24,14 +25,16 @@ class TransferApiIT extends AbstractIntegrationTest {
     JdbcTemplate jdbc;
 
     TransferTestSupport db;
+    TestUser user;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
+        user = newUser();
     }
 
     private <T> ResponseEntity<T> post(String key, Object body, Class<T> type) {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = user.headers();
         if (key != null) {
             headers.set("Idempotency-Key", key);
         }

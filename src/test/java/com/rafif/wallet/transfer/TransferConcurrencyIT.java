@@ -7,6 +7,7 @@ import com.rafif.wallet.common.ApiException;
 import com.rafif.wallet.common.ErrorCode;
 import com.rafif.wallet.support.ConcurrentRunner;
 import com.rafif.wallet.support.LedgerInvariants;
+import com.rafif.wallet.support.TestUser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -37,11 +38,13 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
 
     TransferTestSupport db;
     LedgerInvariants invariants;
+    TestUser user;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
         invariants = new LedgerInvariants(jdbc);
+        user = newUser();
     }
 
     private static String key() {
@@ -88,7 +91,7 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
         List<Callable<Integer>> tasks = new ArrayList<>();
         for (int i = 0; i < THREADS; i++) {
             tasks.add(() -> {
-                HttpHeaders headers = new HttpHeaders();
+                HttpHeaders headers = user.headers();
                 headers.set("Idempotency-Key", key());
                 Map<String, Object> body = Map.of("fromWalletId", source, "toWalletId", target, "amount", 100);
                 return rest.postForEntity("/api/v1/transfers", new HttpEntity<>(body, headers), Map.class)

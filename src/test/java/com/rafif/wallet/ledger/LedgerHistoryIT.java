@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.rafif.wallet.AbstractIntegrationTest;
+import com.rafif.wallet.support.TestUser;
 import com.rafif.wallet.transfer.TopUpService;
 import com.rafif.wallet.transfer.TransferService;
 import com.rafif.wallet.transfer.TransferTestSupport;
@@ -29,10 +30,12 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
     TransferService transferService;
 
     TransferTestSupport db;
+    TestUser user;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
+        user = newUser();
     }
 
     private String key() {
@@ -40,7 +43,7 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
     }
 
     private JsonNode history(UUID wallet, String query) {
-        return rest.getForObject("/api/v1/wallets/" + wallet + "/transactions" + query, JsonNode.class);
+        return user.get(rest, "/api/v1/wallets/" + wallet + "/transactions" + query, JsonNode.class).getBody();
     }
 
     /** alice: +1000 (top-up), -300 (to bob), +100 (from bob). */
@@ -118,7 +121,7 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
     @Test
     void unknownWalletReturns404() {
         ResponseEntity<Map> response =
-                rest.getForEntity("/api/v1/wallets/" + UUID.randomUUID() + "/transactions", Map.class);
+                user.get(rest, "/api/v1/wallets/" + UUID.randomUUID() + "/transactions", Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody()).containsEntry("code", "WALLET_NOT_FOUND");
@@ -130,7 +133,7 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
 
         for (String query : new String[] {"?size=0", "?size=101", "?page=-1"}) {
             ResponseEntity<Map> response =
-                    rest.getForEntity("/api/v1/wallets/" + wallet + "/transactions" + query, Map.class);
+                    user.get(rest, "/api/v1/wallets/" + wallet + "/transactions" + query, Map.class);
             assertThat(response.getStatusCode()).as(query).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).containsEntry("code", "VALIDATION_ERROR");
         }

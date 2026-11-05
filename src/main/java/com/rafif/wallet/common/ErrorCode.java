@@ -13,6 +13,11 @@ public enum ErrorCode {
     SELF_TRANSFER(HttpStatus.BAD_REQUEST, "Cannot transfer to the same wallet"),
     USERNAME_TAKEN(HttpStatus.CONFLICT, "Username is already taken"),
     INVALID_CREDENTIALS(HttpStatus.UNAUTHORIZED, "Invalid username or password"),
+    /** No token was sent at all. */
+    UNAUTHENTICATED(HttpStatus.UNAUTHORIZED, "Authentication required"),
+    /** A token was sent but is bad: wrong signature, expired, wrong issuer, unsigned, malformed. */
+    TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "Access token is invalid or has expired"),
+    FORBIDDEN(HttpStatus.FORBIDDEN, "Access denied"),
     WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Wallet not found"),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "Resource not found"),
     /** Other HTTP-level rejections from Spring (wrong method, unsupported media type...). Status comes from Spring. */

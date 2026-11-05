@@ -80,9 +80,6 @@ public class GlobalExceptionHandler {
     }
 
     private static ProblemDetail problem(ErrorCode code, String detail) {
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(code.status(), detail);
-        pd.setTitle(code.title());
-        pd.setProperty("code", code.name());
-        return pd;
+        return Problems.of(code, detail);
     }
 }

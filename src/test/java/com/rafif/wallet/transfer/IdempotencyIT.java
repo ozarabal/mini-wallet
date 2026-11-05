@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.rafif.wallet.AbstractIntegrationTest;
 import com.rafif.wallet.support.ConcurrentRunner;
 import com.rafif.wallet.support.LedgerInvariants;
+import com.rafif.wallet.support.TestUser;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -31,22 +32,24 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     TransferTestSupport db;
     LedgerInvariants invariants;
+    TestUser user;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
         invariants = new LedgerInvariants(jdbc);
+        user = newUser();
     }
 
     private <T> ResponseEntity<T> transfer(String key, UUID from, UUID to, long amount, Class<T> type) {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = user.headers();
         headers.set("Idempotency-Key", key);
         return rest.postForEntity("/api/v1/transfers",
                 new HttpEntity<>(Map.of("fromWalletId", from, "toWalletId", to, "amount", amount), headers), type);
     }
 
     private <T> ResponseEntity<T> topUp(String key, UUID wallet, long amount, Class<T> type) {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = user.headers();
         headers.set("Idempotency-Key", key);
         return rest.postForEntity("/api/v1/wallets/" + wallet + "/topups",
                 new HttpEntity<>(Map.of("amount", amount), headers), type);
