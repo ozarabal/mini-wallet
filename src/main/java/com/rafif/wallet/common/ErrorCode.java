@@ -11,6 +11,8 @@ public enum ErrorCode {
     MALFORMED_REQUEST(HttpStatus.BAD_REQUEST, "Malformed request"),
     IDEMPOTENCY_KEY_MISSING(HttpStatus.BAD_REQUEST, "Idempotency-Key header is required"),
     SELF_TRANSFER(HttpStatus.BAD_REQUEST, "Cannot transfer to the same wallet"),
+    USERNAME_TAKEN(HttpStatus.CONFLICT, "Username is already taken"),
+    INVALID_CREDENTIALS(HttpStatus.UNAUTHORIZED, "Invalid username or password"),
     WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Wallet not found"),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "Resource not found"),
     /** Other HTTP-level rejections from Spring (wrong method, unsupported media type...). Status comes from Spring. */

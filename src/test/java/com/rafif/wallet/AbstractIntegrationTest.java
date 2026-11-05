@@ -12,6 +12,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public abstract class AbstractIntegrationTest {
 
+    /** The signing key used by the app under test. Tests that mint their own tokens need the same key. */
+    public static final String TEST_JWT_SECRET = "test-only-secret-test-only-secret-test-only";
+
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16");
 
     static {
@@ -23,5 +26,6 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("wallet.jwt.secret", () -> TEST_JWT_SECRET);
     }
 }
