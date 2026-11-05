@@ -1,17 +1,13 @@
-package com.rafif.wallet.transfer;
+﻿package com.rafif.wallet.transfer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.rafif.wallet.AbstractIntegrationTest;
-import java.util.ArrayList;
+import com.rafif.wallet.support.ConcurrentRunner;
+import com.rafif.wallet.support.LedgerInvariants;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,10 +28,12 @@ class TopUpIT extends AbstractIntegrationTest {
     TopUpService topUpService;
 
     TransferTestSupport db;
+    LedgerInvariants invariants;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
+        invariants = new LedgerInvariants(jdbc);
     }
 
     private <T> ResponseEntity<T> topUp(UUID walletId, String key, Object body, Class<T> type) {
@@ -129,23 +127,14 @@ class TopUpIT extends AbstractIntegrationTest {
     @Test
     void concurrentTopUpsAreAllApplied() throws Exception {
         UUID wallet = db.wallet("topup-6", 0);
-        ExecutorService pool = Executors.newFixedThreadPool(20);
-        try {
-            List<Future<TransactionResponse>> futures = new ArrayList<>();
-            for (int i = 0; i < 20; i++) {
-                Callable<TransactionResponse> task =
-                        () -> topUpService.topUp(UUID.randomUUID().toString(), wallet, 50).transaction();
-                futures.add(pool.submit(task));
-            }
-            for (Future<TransactionResponse> f : futures) {
-                f.get(30, TimeUnit.SECONDS);
-            }
-        } finally {
-            pool.shutdownNow();
-        }
+        var start = invariants.snapshot(wallet, SystemWallets.CASH_IN_ID);
+
+        // each call uses its own random key, so all 20 are different requests
+        ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(UUID.randomUUID().toString(), wallet, 50));
 
         assertThat(db.balance(wallet)).isEqualTo(1_000);
         assertThat(db.ledgerRows(wallet)).isEqualTo(20);
         assertThat(db.ledgerNet(wallet)).isEqualTo(1_000); // balance equals the sum of its ledger entries
+        invariants.assertHolds(start);
     }
 }

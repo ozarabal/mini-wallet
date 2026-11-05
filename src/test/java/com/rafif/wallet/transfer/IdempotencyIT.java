@@ -1,18 +1,13 @@
-package com.rafif.wallet.transfer;
+﻿package com.rafif.wallet.transfer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.rafif.wallet.AbstractIntegrationTest;
-import java.util.ArrayList;
+import com.rafif.wallet.support.ConcurrentRunner;
+import com.rafif.wallet.support.LedgerInvariants;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,10 +30,12 @@ class IdempotencyIT extends AbstractIntegrationTest {
     TopUpService topUpService;
 
     TransferTestSupport db;
+    LedgerInvariants invariants;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
+        invariants = new LedgerInvariants(jdbc);
     }
 
     private <T> ResponseEntity<T> transfer(String key, UUID from, UUID to, long amount, Class<T> type) {
@@ -151,39 +148,15 @@ class IdempotencyIT extends AbstractIntegrationTest {
         assertThat(db.balance(to)).isEqualTo(100);
     }
 
-    /** Runs the same task in many threads at the same instant. */
-    private <T> List<T> runTogether(int threads, Callable<T> task) throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch ready = new CountDownLatch(threads);
-        CountDownLatch go = new CountDownLatch(1);
-        try {
-            List<Future<T>> futures = new ArrayList<>();
-            for (int i = 0; i < threads; i++) {
-                futures.add(pool.submit(() -> {
-                    ready.countDown();
-                    go.await();
-                    return task.call();
-                }));
-            }
-            ready.await();
-            go.countDown();
-            List<T> results = new ArrayList<>();
-            for (Future<T> f : futures) {
-                results.add(f.get(30, TimeUnit.SECONDS));
-            }
-            return results;
-        } finally {
-            pool.shutdownNow();
-        }
-    }
-
     @Test
     void concurrentTransfersWithTheSameKeyApplyExactlyOnce() throws Exception {
         UUID from = db.wallet("idem-m", 1_000);
         UUID to = db.wallet("idem-n", 0);
+        var start = invariants.snapshot(from, to);
         String key = UUID.randomUUID().toString();
 
-        List<TransactionResult> results = runTogether(20, () -> transferService.transfer(key, from, to, 100));
+        List<TransactionResult> results =
+                ConcurrentRunner.runRepeated(20, () -> transferService.transfer(key, from, to, 100));
 
         assertThat(results.stream().filter(r -> !r.replayed())).hasSize(1); // exactly one winner
         assertThat(results.stream().map(r -> r.transaction().transactionId()).distinct()).hasSize(1);
@@ -191,17 +164,21 @@ class IdempotencyIT extends AbstractIntegrationTest {
         assertThat(db.balance(to)).isEqualTo(100);
         assertThat(db.ledgerRows(from)).isEqualTo(1);
         assertThat(db.transactionRows("idem-m")).isEqualTo(1);
+        invariants.assertHolds(start);
     }
 
     @Test
     void concurrentTopUpsWithTheSameKeyApplyExactlyOnce() throws Exception {
         UUID wallet = db.wallet("idem-o", 0);
+        var start = invariants.snapshot(wallet, SystemWallets.CASH_IN_ID);
         String key = UUID.randomUUID().toString();
 
-        List<TransactionResult> results = runTogether(20, () -> topUpService.topUp(key, wallet, 250));
+        List<TransactionResult> results =
+                ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(key, wallet, 250));
 
         assertThat(results.stream().filter(r -> !r.replayed())).hasSize(1);
         assertThat(db.balance(wallet)).isEqualTo(250);
         assertThat(db.ledgerRows(wallet)).isEqualTo(1);
+        invariants.assertHolds(start);
     }
 }
