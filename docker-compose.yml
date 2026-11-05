@@ -27,5 +27,16 @@ services:
       postgres:
         condition: service_healthy
 
+  # Load-test runner. Only started on request: docker compose --profile loadtest run --rm k6 run /scripts/transfer.js
+  k6:
+    image: grafana/k6
+    profiles: ["loadtest"]
+    environment:
+      BASE_URL: http://app:8080
+    volumes:
+      - ./load-test:/scripts
+    depends_on:
+      - app
+
 volumes:
   pgdata:
