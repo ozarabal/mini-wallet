@@ -56,3 +56,39 @@ run another query. So the retry must start a new transaction.
 - *Keys never expire* in this version. A real system would purge old keys (e.g. after 24h) with a scheduled job.
 - Alternatives rejected: an in-memory/Redis lock (loses the guarantee on restart or with several instances);
   `SERIALIZABLE` isolation (needs retry loops and does not by itself give replay semantics).
+
+## 3. How we know the tests can actually fail (mutation experiments)
+
+A test that passes proves little unless it also fails when the code is wrong. Each experiment below breaks one
+safeguard on purpose, runs the whole suite from a clean build (`./mvnw clean verify`), and records which tests
+notice. Every change was reverted afterwards; the final clean build on the original code is green (50 tests).
+
+| # | Deliberate breakage | Caught by | What the failure looked like |
+|---|---|---|---|
+| 1a | Remove the row lock (plain read); `@Version` kept | 6 concurrency tests | `ObjectOptimisticLockingFailureException`: the version column turns would-be lost updates into loud failures instead of silent corruption. This is why `@Version` stays as a safety net. |
+| 1b | Remove the row lock **and** `@Version` | overdraw tests, deadlock tests | 100 of 100 concurrent transfers were applied instead of 30 (every thread read the same stale balance), and the opposite-direction test ended at 99,980 instead of 100,000. Money created and destroyed. |
+| 2 | Lock the two wallets one at a time in request order instead of sorted order | opposite-direction test, 3-wallet ring test, random-operations test | PostgreSQL aborted transactions with `deadlock detected` (`CannotAcquireLockException`). |
+| 3a | Do not treat a lost idempotency race as a replay (rethrow instead) | both same-key concurrency tests, random-operations test | The losing requests failed instead of returning the winner's result. Money stayed correct, because the unique constraint still blocked the duplicate. |
+| 3b | Drop the database unique constraint (application logic untouched) | both same-key concurrency tests, random-operations test | Duplicate `transactions` rows for one key (`Query did not return a unique result: 2 results were returned`); an earlier run saw 17 of 20 identical requests applied. The application-level check alone does not stop a race: the constraint is what makes "exactly once" true. |
+| 4 | `MoneyMover` skips the CREDIT ledger entry | 19 tests in 7 classes, including `LedgerInvariantsIT` | A balance changed with no matching ledger line. The invariant checker reports it; `TransferApiIT` and the history tests fail on the missing entry. |
+
+**Why experiment 2 locks one wallet at a time instead of just deleting `ORDER BY`:** with only two rows in one
+`IN (...)` query, PostgreSQL tends to lock them in the same physical order whatever the query says, so removing the
+`ORDER BY` alone might still be deadlock-free by accident and would prove nothing. Locking separately in request
+order is the real failure that ordered locking prevents.
+
+**Caveats found while doing this (kept for honesty)**
+- When one test fails, a later test can fail too without being related. A failing test leaves worker threads
+  finishing their last operations while the next test measures the shared cash-in wallet, so `TopUpIT
+  .concurrentTopUpsAreAllApplied` showed "money not conserved" in several experiments. Run alone under the same
+  breakage it passes (checked for experiments 2 and 3b). This only affects runs that are already failing.
+- In 1b, `LedgerInvariantIT` and `WalletControllerIT` also failed, but only because removing `@Version` stops Spring
+  Data from creating wallets at all (a side effect of the mutation, not evidence about locking). They are not
+  counted as catchers of 1b.
+- In experiment 4 the random-operations test failed *incidentally* (it crashed while rebuilding a replayed response
+  with no CREDIT entry) before reaching the invariant checker. The checker itself is proven by `LedgerInvariantsIT`.
+- Stale build output can mislead: restoring a file with an old timestamp made Maven keep the mutated migration in
+  `target/classes`, which produced 4 false failures on correct code. All results above are from `clean` builds.
+
+**To repeat an experiment:** make the one-line change, run `./mvnw clean verify`, expect the failures listed, then
+revert the change and run `./mvnw clean verify` again.
