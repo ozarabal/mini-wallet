@@ -1,4 +1,4 @@
-﻿package com.rafif.wallet.support;
+package com.rafif.wallet.support;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
