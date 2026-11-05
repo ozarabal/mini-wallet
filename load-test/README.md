@@ -25,7 +25,7 @@ On Windows PowerShell, step 3 is: `Get-Content load-test/verify.sql | docker com
 |---|---|---|
 | `spread` | random transfers between 200 wallets, unique key each | normal throughput; little lock contention |
 | `hot` | every transfer pays into or out of ONE wallet | the worst case: all requests queue on one row lock |
-| `topup` | every request is a top-up | all top-ups lock the single cash-in wallet, so they run one after another |
+| `topup` | every request is a top-up | each top-up locks one of the 16 system cash-in wallets (chosen by its key) and the target wallet. With a single cash-in wallet all top-ups took turns on it (~330 req/s); see DESIGN_DECISIONS.md section 4 |
 
 About 5% of requests are retries of the previous request with the same key. They must be answered `200` from the
 stored result (this exercises the idempotency path under load).
@@ -39,6 +39,15 @@ stored result (this exercises the idempotency path under load).
 | `DURATION_SECONDS` | 60 | measured phase |
 | `WALLETS` | 200 | wallets created and funded in `setup` |
 | `REPLAY_PERCENT` | 5 | share of requests that retry the previous one |
+
+## Changing the connection pool size
+
+The app's database pool (how many requests can use the database at once) defaults to 10. To try another size,
+set `DB_POOL_SIZE` when starting the app, and use a fresh database for comparable runs:
+
+```bash
+docker compose down -v && DB_POOL_SIZE=20 docker compose up --build -d
+```
 
 ## Reading the output
 

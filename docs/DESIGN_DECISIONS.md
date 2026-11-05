@@ -21,8 +21,9 @@
 | `UPDATE wallets SET balance = balance - ? WHERE id = ? AND balance >= ?` | Atomic and lock-light, but we also need to read both wallets, write ledger entries with `balance_after`, and keep one clear code path. |
 | Lock wallets one by one in a Java-sorted loop | Also deadlock-free, but a single ordered query is shorter and easier to explain. |
 
-**Trade-off:** top-ups use the system cash-in wallet as the source, so every top-up locks the same row and top-ups
-are serialized. Acceptable at this scale; the load test in M2 will measure it.
+**Trade-off:** a top-up locks its source cash-in wallet too. With a single cash-in wallet that made every top-up in
+the system take turns on one row; the M2 load test measured it (about 330 req/s against about 1,800 for transfers
+between different wallets). That one is a design choice, not a real constraint, and section 4 removes it.
 
 ## 2. Idempotency: database unique constraint, not an application check
 
@@ -92,3 +93,85 @@ order is the real failure that ordered locking prevents.
 
 **To repeat an experiment:** make the one-line change, run `./mvnw clean verify`, expect the failures listed, then
 revert the change and run `./mvnw clean verify` again.
+
+## 4. Spreading top-ups over 16 cash-in wallets
+
+**Problem (found by the M2 load test):** top-ups ran at ~350 req/s while transfers between different wallets ran at
+~1,800. A top-up is a transfer from the system cash-in wallet, and a transfer locks both of its wallets, so with ONE
+cash-in wallet every top-up in the whole system took turns on a single row. The hot-wallet case is similar but is a
+real limit (many people paying the same wallet). This one was a design choice.
+
+**Decision:** 16 cash-in wallets (the one from V1 plus 15 added by V2, all owned by `SYSTEM`). A top-up picks its
+cash-in wallet as `hashCode(idempotencyKey) mod 16` (`SystemWallets.cashInFor`), then locks that wallet and the target
+wallet exactly as before.
+
+**Total money check:** the "total money is constant" checks (`LedgerInvariants`, `load-test/verify.sql`) sum over ALL
+16 cash-in wallets, because they are part of the closed system; checking only one would report money as lost.
+
+**Why it is still safe**
+- Lock order is unchanged: a top-up locks exactly two wallets through the same ordered query, so a global ascending
+  order still holds and no deadlock cycle can form, even with top-ups and transfers mixed (tested: 400 mixed
+  operations, both directions).
+- The same key always maps to the same cash-in wallet (`String.hashCode` is fixed by the Java spec, so it is stable
+  across restarts and instances). A replay does not need the mapping at all: it reads the wallet that was really
+  debited from the stored ledger entry, so it returns the identical response.
+- `V1` was not edited: Flyway checksums applied migrations, so changing it would break every existing database. The
+  15 new wallets come from `V2`. Each starts with 10^15 (the first keeps its 4.6x10^18) so the sum of all balances
+  still fits in a bigint.
+
+**Alternatives considered**
+| Option | Why not |
+|---|---|
+| Pick by the target wallet id | Top-ups to one popular wallet would still pile onto one cash-in wallet. (They queue on the target wallet anyway, but a spread by key never concentrates load.) |
+| Pick a random wallet per request | Not repeatable: two racing requests with the same key could lock different cash-in wallets. Still correct (the unique constraint decides), but harder to reason about. |
+| Create money with no source wallet | Breaks double-entry: the ledger would no longer balance per transaction. |
+| Lock the cash-in wallet last (late `UPDATE`) | Shorter hold time, but it is still one row, and it breaks the single global lock order that makes deadlocks impossible. |
+| More than 16 wallets | Not needed to prove the point; see the open question below. |
+
+**Result** (32 users, 60 s measured after 15 s warm-up, median of 3 runs, fresh database, same machine and session):
+
+| | Requests/sec | p95 | p99 |
+|---|---|---|---|
+| Before: 1 cash-in wallet | 330 (326-335) | 139 ms | 161 ms |
+| After: 16 cash-in wallets | **1,625** (1,612-1,632) | **30 ms** | 39 ms |
+
+That is 4.9x. The 16 wallets were used evenly: each paid for between 6.2% and 6.3% of the top-ups (a perfect spread
+is 6.25%). A first measurement earlier the same day gave 349 req/s for "before"; the 5% difference is the drift between
+sessions, which is why "before" was measured again right before "after".
+
+**Mutation check:** making `cashInFor` always return the first wallet (the old behaviour) breaks no correctness test,
+because the system is still correct, only slow again. It is caught by exactly the tests that check the spread:
+`SystemWalletsTest` (two tests) and `TopUpIT.topUpsAreSpreadOverSeveralCashInWallets`. A performance regression slips
+past ordinary correctness tests, which is why those tests exist. (Maven stops after failing unit tests, so the
+integration tests had to be run on their own to see this.)
+
+**Limits and open questions**
+- A cash-in wallet that runs out of money would make a top-up fail with `INSUFFICIENT_FUNDS`, which would be a
+  confusing answer to a top-up. At 10^15 per wallet this cannot happen at this scale, and it is not handled.
+- The `fromWalletId` of a top-up response is now one of 16 ids, not a constant.
+- With a pool of 32 connections top-ups reached 2,705 req/s against 3,510 for spread, with a higher p99. Likely
+  explanation: 32 concurrent top-ups over 16 wallets sometimes pick the same one and wait. Not tested; more cash-in
+  wallets (32 or 64) would test it.
+
+## 5. Database connection pool size
+
+While checking whether top-ups could reach the spread numbers, the pool became the next question: 32 users shared
+HikariCP's default of 10 connections, so up to 22 requests at a time were waiting for a connection. The pool size is
+now written in `application.yml` and set with `DB_POOL_SIZE` (default 10, unchanged). The app reports the size it
+runs with (`hikaricp_connections_max` on `/actuator/prometheus`), which was checked before every run.
+
+| Pool size | Spread req/s (p95) | Top-ups req/s (p95) |
+|---|---|---|
+| 10 (default) | 1,795 (28 ms) | 1,625 (30 ms) |
+| 20 | 2,834 (18 ms) | 2,372 (23 ms) |
+| 32 | 3,510 (16 ms) | 2,705 (26 ms) |
+
+Median of 3 runs each, fresh database each time. All runs had 0 unexpected responses and 0 books-check violations.
+
+**Reading it:** on this machine, with 32 users, the default pool limited the normal case; 32 connections nearly
+doubled throughput (+96%). I did not change the default, because the best value is not a property of the code: it
+depends on the database's CPU cores, its `max_connections` (100 by default; total connections from all app instances
+must stay under it), and how long each request holds a connection. Here the app and the database shared one CPU, so
+more connections also means more competition for it. Pools larger than the number of users (32) cannot help in this
+test, so larger values were not tried. The hot-wallet scenario was not re-run with bigger pools; I expect no gain
+because its limit is the single row lock, but that is an expectation, not a measurement.
