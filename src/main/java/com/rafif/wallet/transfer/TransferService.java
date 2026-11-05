@@ -6,9 +6,6 @@ import com.rafif.wallet.common.RequestHasher;
 import com.rafif.wallet.ledger.Transaction;
 import com.rafif.wallet.ledger.TransactionRepository;
 import com.rafif.wallet.ledger.TransactionType;
-import com.rafif.wallet.wallet.Wallet;
-import com.rafif.wallet.wallet.WalletRepository;
-import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,12 +13,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TransferService {
 
-    private final WalletRepository wallets;
+    private final WalletLocker walletLocker;
     private final TransactionRepository transactions;
     private final MoneyMover moneyMover;
 
-    public TransferService(WalletRepository wallets, TransactionRepository transactions, MoneyMover moneyMover) {
-        this.wallets = wallets;
+    public TransferService(WalletLocker walletLocker, TransactionRepository transactions, MoneyMover moneyMover) {
+        this.walletLocker = walletLocker;
         this.transactions = transactions;
         this.moneyMover = moneyMover;
     }
@@ -37,26 +34,17 @@ public class TransferService {
         }
 
         // 1. Lock both wallets in ascending id order (see WalletRepository for why).
-        List<Wallet> locked = wallets.findAllByIdForUpdate(List.of(fromId, toId));
-        Wallet from = find(locked, fromId);
-        Wallet to = find(locked, toId);
+        WalletLocker.Pair locked = walletLocker.lock(fromId, toId);
 
         // 2. Record the business transaction. The unique (owner_id, idempotency_key) constraint is checked here.
         String hash = RequestHasher.sha256("TRANSFER|" + fromId + "|" + toId + "|" + amount);
         Transaction tx = transactions.saveAndFlush(
-                Transaction.start(TransactionType.TRANSFER, from.getOwnerId(), idempotencyKey, hash));
+                Transaction.start(TransactionType.TRANSFER, locked.from().getOwnerId(), idempotencyKey, hash));
 
         // 3. Move the money and write the two ledger entries.
-        moneyMover.move(tx.getId(), from, to, amount);
+        moneyMover.move(tx.getId(), locked.from(), locked.to(), amount);
         tx.markCompleted();
 
         return TransactionResponse.of(tx, fromId, toId, amount);
-    }
-
-    private static Wallet find(List<Wallet> locked, UUID id) {
-        return locked.stream()
-                .filter(w -> w.getId().equals(id))
-                .findFirst()
-                .orElseThrow(() -> new ApiException(ErrorCode.WALLET_NOT_FOUND, "Wallet " + id + " not found"));
     }
 }
