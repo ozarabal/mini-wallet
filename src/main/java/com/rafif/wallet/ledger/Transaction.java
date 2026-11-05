@@ -9,6 +9,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 /**
@@ -55,7 +56,8 @@ public class Transaction {
         t.ownerId = ownerId;
         t.idempotencyKey = idempotencyKey;
         t.requestHash = requestHash;
-        t.createdAt = Instant.now();
+        // PostgreSQL stores microseconds; truncate so the response we return now equals what a replay reads later.
+        t.createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
         return t;
     }
 

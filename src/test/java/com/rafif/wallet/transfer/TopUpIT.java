@@ -134,7 +134,7 @@ class TopUpIT extends AbstractIntegrationTest {
             List<Future<TransactionResponse>> futures = new ArrayList<>();
             for (int i = 0; i < 20; i++) {
                 Callable<TransactionResponse> task =
-                        () -> topUpService.topUp(UUID.randomUUID().toString(), wallet, 50);
+                        () -> topUpService.topUp(UUID.randomUUID().toString(), wallet, 50).transaction();
                 futures.add(pool.submit(task));
             }
             for (Future<TransactionResponse> f : futures) {

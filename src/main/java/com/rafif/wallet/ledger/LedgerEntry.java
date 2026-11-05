@@ -9,6 +9,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 /** One side (debit or credit) of a transaction. Immutable once written. */
@@ -50,7 +51,7 @@ public class LedgerEntry {
         e.direction = direction;
         e.amount = amount;
         e.balanceAfter = balanceAfter;
-        e.createdAt = Instant.now();
+        e.createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS); // PostgreSQL precision
         return e;
     }
 

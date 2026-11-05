@@ -8,6 +8,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Entity
@@ -44,7 +45,7 @@ public class Wallet {
         w.ownerId = ownerId;
         w.currency = "IDR";
         w.balance = 0L;
-        w.createdAt = Instant.now();
+        w.createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS); // PostgreSQL precision
         return w;
     }
 

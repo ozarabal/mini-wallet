@@ -23,3 +23,36 @@
 
 **Trade-off:** top-ups use the system cash-in wallet as the source, so every top-up locks the same row and top-ups
 are serialized. Acceptable at this scale; the load test in M2 will measure it.
+
+## 2. Idempotency: database unique constraint, not an application check
+
+**Decision:** every top-up/transfer needs an `Idempotency-Key`. The pair `(owner_id, idempotency_key)` is `UNIQUE`
+in the `transactions` table, and the request is stored with a SHA-256 `request_hash` of its canonical form.
+
+**Flow** (`IdempotencyService`, which is deliberately *not* transactional)
+1. Look up `(owner, key)`. Found + same hash -> return the stored result (HTTP 200, same transaction id, nothing
+   written). Found + different hash -> 422 `IDEMPOTENCY_KEY_REUSED`.
+2. Not found -> run the operation in ONE DB transaction (lock wallets, insert the `transactions` row, move money,
+   write ledger entries, commit).
+3. If a concurrent request with the same key commits first, our insert violates the unique constraint. We catch
+   that **outside** the failed transaction and run step 1 again in a fresh transaction, which now finds the winner.
+
+**Why a unique constraint**
+- "Check if the key exists, then insert" is a race: two requests can both see "not found". Only the database can
+  decide atomically who wins. The lookup in step 1 is just a fast path for ordinary retries.
+- The winner's row is only visible once its whole transaction (money + ledger) has committed, so a retry can never
+  observe a half-applied request.
+- The replayed response is rebuilt from the stored transaction + ledger entries, so no response body is stored.
+
+**Why the catch is outside the transaction:** PostgreSQL marks a transaction as aborted after any error; it cannot
+run another query. So the retry must start a new transaction.
+
+**Choices and trade-offs**
+- *Scope is the wallet owner* (source wallet for transfers, target for top-ups). In M3 this becomes the JWT user.
+- *The request type is part of the hash*, so one key cannot mean a transfer once and a top-up another time.
+- *A failed request does not consume the key* (e.g. `INSUFFICIENT_FUNDS`): everything rolls back, including the
+  `transactions` row, so a retry after topping up can succeed. Alternative: store failures too and replay them.
+  That needs a second write path that survives the rollback; not worth the complexity here.
+- *Keys never expire* in this version. A real system would purge old keys (e.g. after 24h) with a scheduled job.
+- Alternatives rejected: an in-memory/Redis lock (loses the guarantee on restart or with several instances);
+  `SERIALIZABLE` isolation (needs retry loops and does not by itself give replay semantics).
