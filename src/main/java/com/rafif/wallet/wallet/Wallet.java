@@ -1,5 +1,7 @@
 package com.rafif.wallet.wallet;
 
+import com.rafif.wallet.common.ApiException;
+import com.rafif.wallet.common.ErrorCode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -44,6 +46,26 @@ public class Wallet {
         w.balance = 0L;
         w.createdAt = Instant.now();
         return w;
+    }
+
+    /** Removes money. The balance can never go below zero (the DB CHECK constraint is the second line of defence). */
+    public void debit(long amount) {
+        requirePositive(amount);
+        if (balance < amount) {
+            throw new ApiException(ErrorCode.INSUFFICIENT_FUNDS, "Wallet " + id + " has insufficient funds");
+        }
+        balance -= amount;
+    }
+
+    public void credit(long amount) {
+        requirePositive(amount);
+        balance = Math.addExact(balance, amount); // fails loudly on overflow instead of wrapping negative
+    }
+
+    private static void requirePositive(long amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Amount must be positive: " + amount);
+        }
     }
 
     public UUID getId() {

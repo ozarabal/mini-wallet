@@ -3,12 +3,14 @@ package com.rafif.wallet.common;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /** Turns every failure into an RFC 7807 ProblemDetail with a stable "code" property. */
@@ -26,6 +28,16 @@ public class GlobalExceptionHandler {
     ProblemDetail handleValidation(MethodArgumentNotValidException e) {
         String detail = e.getBindingResult().getFieldErrors().stream()
                 .map(f -> f.getField() + " " + f.getDefaultMessage())
+                .sorted()
+                .collect(Collectors.joining("; "));
+        return problem(ErrorCode.VALIDATION_ERROR, detail);
+    }
+
+    /** Raised for constraint annotations on plain parameters, e.g. a blank Idempotency-Key header. */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    ProblemDetail handleMethodValidation(HandlerMethodValidationException e) {
+        String detail = e.getAllErrors().stream()
+                .map(MessageSourceResolvable::getDefaultMessage)
                 .sorted()
                 .collect(Collectors.joining("; "));
         return problem(ErrorCode.VALIDATION_ERROR, detail);
