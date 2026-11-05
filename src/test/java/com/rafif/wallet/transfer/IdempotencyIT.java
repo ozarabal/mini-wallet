@@ -196,7 +196,7 @@ class IdempotencyIT extends AbstractIntegrationTest {
     @Test
     void concurrentTopUpsWithTheSameKeyApplyExactlyOnce() throws Exception {
         UUID wallet = db.wallet("idem-o", 0);
-        var start = invariants.snapshot(wallet, SystemWallets.CASH_IN_ID);
+        var start = invariants.snapshot(TransferTestSupport.withAllCashIn(wallet));
         String key = UUID.randomUUID().toString();
 
         List<TransactionResult> results =

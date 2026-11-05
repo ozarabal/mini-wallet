@@ -44,10 +44,15 @@ class TransactionExecutor {
         return TransactionResponse.of(tx, fromId, toId, amount);
     }
 
-    /** A top-up is a transfer from the system cash-in wallet, so the ledger always balances. */
+    /**
+     * A top-up is a transfer from a system cash-in wallet, so the ledger always balances. Which of the cash-in
+     * wallets is decided by the idempotency key, to spread top-ups over several rows instead of queueing them all
+     * on one. The locking is unchanged: two wallets, locked in ascending id order.
+     */
     @Transactional
     TransactionResponse topUp(String idempotencyKey, String requestHash, UUID walletId, long amount) {
-        WalletLocker.Pair locked = walletLocker.lock(SystemWallets.CASH_IN_ID, walletId);
+        UUID cashIn = SystemWallets.cashInFor(idempotencyKey);
+        WalletLocker.Pair locked = walletLocker.lock(cashIn, walletId);
 
         // The owner of a top-up is the owner of the wallet being topped up.
         Transaction tx = transactions.saveAndFlush(Transaction.start(
@@ -56,6 +61,6 @@ class TransactionExecutor {
         moneyMover.move(tx.getId(), locked.from(), locked.to(), amount);
         tx.markCompleted();
 
-        return TransactionResponse.of(tx, SystemWallets.CASH_IN_ID, walletId, amount);
+        return TransactionResponse.of(tx, cashIn, walletId, amount);
     }
 }

@@ -67,7 +67,7 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
         }
         LedgerInvariants invariants = new LedgerInvariants(jdbc);
         List<UUID> everyone = new ArrayList<>(wallets);
-        everyone.add(SystemWallets.CASH_IN_ID); // top-ups come from here, so the wallet set must include it
+        everyone.addAll(SystemWallets.CASH_IN_IDS); // top-ups come from these, so the wallet set must include all
         var start = invariants.snapshot(everyone.toArray(UUID[]::new));
         for (int i = 0; i < WALLETS; i++) {
             topUpService.topUp("fund-" + runId + "-" + i, wallets.get(i), FUNDING);

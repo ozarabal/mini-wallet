@@ -3,6 +3,8 @@ package com.rafif.wallet;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.rafif.wallet.transfer.SystemWallets;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,11 +15,21 @@ class SchemaIT extends AbstractIntegrationTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    /** The migrations (V1 + V2) and SystemWallets in the code must describe the same set of wallets. */
     @Test
-    void migrationSeedsCashInWallet() {
-        Long balance = jdbc.queryForObject(
-                "SELECT balance FROM wallets WHERE id = '00000000-0000-0000-0000-000000000001'", Long.class);
-        assertThat(balance).isPositive();
+    void migrationsCreateExactlyTheCashInWalletsTheCodeKnows() {
+        List<UUID> inDatabase = jdbc.queryForList("SELECT id FROM wallets WHERE owner_id = 'SYSTEM'", UUID.class);
+
+        assertThat(inDatabase).hasSize(SystemWallets.COUNT);
+        assertThat(inDatabase).containsExactlyInAnyOrderElementsOf(SystemWallets.CASH_IN_IDS);
+    }
+
+    @Test
+    void everyCashInWalletHasFundsToTopUpFrom() {
+        for (UUID id : SystemWallets.CASH_IN_IDS) {
+            Long balance = jdbc.queryForObject("SELECT balance FROM wallets WHERE id = ?", Long.class, id);
+            assertThat(balance).as("cash-in wallet %s", id).isPositive();
+        }
     }
 
     @Test

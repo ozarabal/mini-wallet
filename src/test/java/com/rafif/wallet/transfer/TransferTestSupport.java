@@ -1,5 +1,7 @@
 package com.rafif.wallet.transfer;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -10,6 +12,16 @@ public class TransferTestSupport {
 
     public TransferTestSupport(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * The given wallets plus EVERY system cash-in wallet. A top-up takes its money from one of the cash-in wallets
+     * (chosen by the idempotency key), so a money-conservation check must include all of them to be a closed set.
+     */
+    public static UUID[] withAllCashIn(UUID... wallets) {
+        List<UUID> all = new ArrayList<>(List.of(wallets));
+        all.addAll(SystemWallets.CASH_IN_IDS);
+        return all.toArray(UUID[]::new);
     }
 
     public UUID wallet(String owner, long balance) {

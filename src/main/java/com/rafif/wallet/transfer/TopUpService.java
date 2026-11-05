@@ -22,8 +22,8 @@ public class TopUpService {
     }
 
     public TransactionResult topUp(String idempotencyKey, UUID walletId, long amount) {
-        if (walletId.equals(SystemWallets.CASH_IN_ID)) {
-            throw new ApiException(ErrorCode.SELF_TRANSFER, "Cannot top up the system cash-in wallet");
+        if (SystemWallets.isCashIn(walletId)) {
+            throw new ApiException(ErrorCode.SELF_TRANSFER, "Cannot top up a system cash-in wallet");
         }
         // The idempotency scope is the owner of the wallet being topped up.
         String ownerId = wallets.findById(walletId)

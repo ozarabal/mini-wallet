@@ -11,20 +11,24 @@ SELECT 'negative balance' AS violation, id::text AS detail
 FROM wallets WHERE balance < 0
 
 UNION ALL
--- 2. Money is conserved: every unit started in the system cash-in wallet (seeded by V1), so the total never changes.
+-- 2. Money is conserved: every unit started in the 16 system cash-in wallets, so the total over ALL wallets (the
+--    cash-in wallets included) never changes. Seeds: wallet ...0001 (V1) 4611686018427387903, plus 15 wallets (V2)
+--    with 10^15 each: 4611686018427387903 + 15 * 10^15 = 4626686018427387903.
 SELECT 'money not conserved', sum(balance::numeric)::text
 FROM wallets
-HAVING sum(balance::numeric) <> 4611686018427387903
+HAVING sum(balance::numeric) <> 4626686018427387903
 
 UNION ALL
--- 3. Each wallet's balance equals its ledger (the cash-in wallet also starts with its seed).
+-- 3. Each wallet's balance equals its ledger (a cash-in wallet also starts with its seed).
 SELECT 'balance differs from ledger', w.id::text
 FROM wallets w
 LEFT JOIN (SELECT wallet_id,
                   sum(CASE direction WHEN 'CREDIT' THEN amount::numeric ELSE -amount::numeric END) AS net
            FROM ledger_entries GROUP BY wallet_id) l ON l.wallet_id = w.id
 WHERE w.balance::numeric <>
-      (CASE WHEN w.id = '00000000-0000-0000-0000-000000000001' THEN 4611686018427387903 ELSE 0 END)
+      (CASE WHEN w.id = '00000000-0000-0000-0000-000000000001' THEN 4611686018427387903
+            WHEN w.owner_id = 'SYSTEM' THEN 1000000000000000
+            ELSE 0 END)
       + COALESCE(l.net, 0)
 
 UNION ALL
