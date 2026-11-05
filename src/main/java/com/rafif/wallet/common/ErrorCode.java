@@ -12,6 +12,9 @@ public enum ErrorCode {
     IDEMPOTENCY_KEY_MISSING(HttpStatus.BAD_REQUEST, "Idempotency-Key header is required"),
     SELF_TRANSFER(HttpStatus.BAD_REQUEST, "Cannot transfer to the same wallet"),
     WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Wallet not found"),
+    RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "Resource not found"),
+    /** Other HTTP-level rejections from Spring (wrong method, unsupported media type...). Status comes from Spring. */
+    REQUEST_REJECTED(HttpStatus.BAD_REQUEST, "Request rejected"),
     INSUFFICIENT_FUNDS(HttpStatus.UNPROCESSABLE_ENTITY, "Insufficient funds"),
     IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_ENTITY, "Idempotency-Key was already used with a different request"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error");

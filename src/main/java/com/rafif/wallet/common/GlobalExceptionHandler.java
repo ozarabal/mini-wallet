@@ -4,8 +4,10 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -63,6 +65,15 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ProblemDetail handleUnexpected(Exception e) {
+        // Spring's own HTTP errors (unknown URL, wrong method, bad media type...) already know their status.
+        // Keep it - they are client mistakes, not server errors.
+        if (e instanceof ErrorResponse springError) {
+            ProblemDetail pd = springError.getBody();
+            ErrorCode code = pd.getStatus() == HttpStatus.NOT_FOUND.value()
+                    ? ErrorCode.RESOURCE_NOT_FOUND : ErrorCode.REQUEST_REJECTED;
+            pd.setProperty("code", code.name());
+            return pd;
+        }
         // Never leak internals to the client; log the full stack trace for us.
         log.error("Unexpected error", e);
         return problem(ErrorCode.INTERNAL_ERROR, "An unexpected error occurred");
