@@ -148,6 +148,32 @@ class IdempotencyIT extends AbstractIntegrationTest {
         assertThat(db.balance(to)).isEqualTo(100);
     }
 
+    /** Counts across the WHOLE database, so a stray extra row anywhere would be noticed. */
+    @Test
+    void manyReplaysAddNoRowsAnywhereInTheDatabase() throws Exception {
+        UUID from = db.wallet("idem-p", 1_000);
+        UUID to = db.wallet("idem-q", 0);
+        String key = UUID.randomUUID().toString();
+        transferService.transfer(key, from, to, 100); // the one real application of this request
+
+        int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM ledger_entries", Integer.class);
+        int transactionsBefore = jdbc.queryForObject("SELECT count(*) FROM transactions", Integer.class);
+        var start = invariants.snapshot(from, to);
+
+        for (int i = 0; i < 25; i++) {
+            assertThat(transferService.transfer(key, from, to, 100).replayed()).isTrue(); // one after another
+        }
+        List<TransactionResult> concurrent =
+                ConcurrentRunner.runRepeated(25, () -> transferService.transfer(key, from, to, 100)); // all at once
+        assertThat(concurrent).allMatch(TransactionResult::replayed);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entries", Integer.class)).isEqualTo(ledgerBefore);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transactions", Integer.class)).isEqualTo(transactionsBefore);
+        assertThat(db.balance(from)).isEqualTo(900);
+        assertThat(db.balance(to)).isEqualTo(100);
+        invariants.assertHolds(start);
+    }
+
     @Test
     void concurrentTransfersWithTheSameKeyApplyExactlyOnce() throws Exception {
         UUID from = db.wallet("idem-m", 1_000);
