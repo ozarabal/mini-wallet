@@ -1,0 +1,12 @@
+Measured on 2026-11-05 (runs 16:38-16:51 local time)
+
+CPU      Intel Core i7-10700 @ 2.90 GHz, 8 cores / 16 threads
+RAM      15.9 GB
+OS       Windows 11 Pro 10.0.26200
+Docker   Docker Desktop 29.8.2 (16 CPUs, ~7.7 GB memory visible to containers)
+Java     OpenJDK 21.0.13
+Stack    app (Spring Boot 3.5, HikariCP default pool of 10 connections), PostgreSQL 16 and k6 all on this one machine,
+         in Docker, via `docker compose`
+Idle     CPU load about 10% before the runs; VS Code and Chrome were open in the background
+Method   fresh database (`docker compose down -v`), then for each scenario 3 runs of 15 s warm-up + 60 s measured,
+         32 virtual users, no pauses. The books were verified with load-test/verify.sql after each scenario (0 violations).

@@ -85,13 +85,50 @@ The reasoning and the alternatives that were rejected are in [docs/DESIGN_DECISI
 ```
 
 Integration tests run against a **real PostgreSQL 16** in Testcontainers (no H2), so locking, constraints and
-isolation behave like production. They include concurrency tests: parallel transfers out of one wallet never
-overdraw it, opposite transfers do not deadlock, and 20 parallel requests with the same key apply exactly once.
-Docker must be running.
+isolation behave like production. Docker must be running. They include:
+
+- 100 parallel transfers out of one wallet never overdraw it (through the service and over HTTP)
+- opposite transfers (A to B and B to A) and a 3-wallet ring do not deadlock
+- 20 parallel requests with the same key apply exactly once; replays add no rows anywhere
+- a seeded random test: 1,000 overlapping top-ups, transfers and retries on 16 threads, then the books must balance
+  (replay a failure with `./mvnw verify -Dinvariant.seed=<seed>`)
+
+The tests were themselves tested: [DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md#3-how-we-know-the-tests-can-actually-fail-mutation-experiments)
+shows which tests fail when the locking, the unique constraint or the ledger writes are deliberately broken.
+
+## Performance
+
+Measured with [k6](load-test/README.md) against the real HTTP API: 32 concurrent users sending requests back to back,
+15 s warm-up (excluded) then 60 s measured, three runs per scenario. The table shows the median run.
+About 5% of requests are retries with the same `Idempotency-Key` (answered from the stored result).
+
+| Scenario | Requests/sec | p95 latency | p99 latency | Errors (5xx) |
+|---|---|---|---|---|
+| **Spread**: random transfers between 200 wallets | **1,805** | **28 ms** | 36 ms | 0 |
+| **Hot wallet**: every transfer pays into or out of one wallet | 347 | 131 ms | 151 ms | 0 |
+| **Top-ups**: all lock the single cash-in wallet | 349 | 131 ms | 152 ms | 0 |
+
+Run-to-run spread was small (spread: 1,788-1,822 req/s; hot: 346-351; top-ups: 343-353). After every scenario
+[`verify.sql`](load-test/verify.sql) confirmed the books balance (no negative balance, total money unchanged, every
+balance equal to its ledger, every transaction balanced): 0 violations after about 530,000 transactions.
+
+**What the numbers say**
+- When requests touch different wallets they run in parallel and the service handles ~1,800 req/s.
+- When every request needs the same wallet, they have to take turns on that row lock, so throughput drops about 5x
+  to ~350 req/s (one transaction every ~2.9 ms). Top-ups behave the same because each one locks the cash-in wallet.
+  That is the price of the locking rule that makes overdrafts and lost updates impossible.
+- Latency follows from throughput (32 users / 347 req/s = 92 ms average, which is what was measured).
+
+**What they do not say.** One development laptop (Intel i7-10700, 16 GB, Windows 11, Docker Desktop) ran the app,
+PostgreSQL and k6 together, with the default connection pool of 10, and an IDE and browser open. Users send their next
+request as soon as the last one returns (no think time), so this shows the saturation point of this setup, not a
+production capacity. The scenarios ran one after another on the same database, so later ones saw larger tables.
+Raw results, machine details and the books checks are in [load-test/results](load-test/results).
 
 ## Roadmap
 
-- **M2** – full concurrency proof suite (invariant test) and a k6 load test with measured numbers
+- **M2** – done: seeded random-operations invariant test, 100-way concurrency tests, mutation experiments
+  ([docs](docs/DESIGN_DECISIONS.md)) and the load test above
 - **M3** – Spring Security + JWT, ownership checks, rate limiting
 - **M4** – transactional outbox + Kafka
 - **M5** – metrics dashboard, architecture diagram, load-test results

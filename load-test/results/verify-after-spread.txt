@@ -1,0 +1,9 @@
+﻿ wallets | transactions | ledger_entries 
+---------+--------------+----------------
+     604 |       381500 |         763000
+(1 row)
+
+ violation | detail 
+-----------+--------
+(0 rows)
+
