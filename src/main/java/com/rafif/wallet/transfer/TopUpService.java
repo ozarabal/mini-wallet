@@ -3,11 +3,12 @@ package com.rafif.wallet.transfer;
 import com.rafif.wallet.common.ApiException;
 import com.rafif.wallet.common.ErrorCode;
 import com.rafif.wallet.common.RequestHasher;
+import com.rafif.wallet.wallet.Wallet;
 import com.rafif.wallet.wallet.WalletRepository;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
-/** Entry point for top-ups: validate, then run the top-up at most once per Idempotency-Key. */
+/** Entry point for top-ups: check the caller owns the wallet, then run it at most once per Idempotency-Key. */
 @Service
 public class TopUpService {
 
@@ -21,14 +22,18 @@ public class TopUpService {
         this.executor = executor;
     }
 
-    public TransactionResult topUp(String idempotencyKey, UUID walletId, long amount) {
+    public TransactionResult topUp(UUID callerId, String idempotencyKey, UUID walletId, long amount) {
         if (SystemWallets.isCashIn(walletId)) {
             throw new ApiException(ErrorCode.SELF_TRANSFER, "Cannot top up a system cash-in wallet");
         }
-        // The idempotency scope is the owner of the wallet being topped up.
-        String ownerId = wallets.findById(walletId)
-                .orElseThrow(() -> new ApiException(ErrorCode.WALLET_NOT_FOUND, "Wallet " + walletId + " not found"))
-                .getOwnerId();
+        Wallet wallet = wallets.findById(walletId)
+                .orElseThrow(() -> new ApiException(ErrorCode.WALLET_NOT_FOUND, "Wallet " + walletId + " not found"));
+
+        // You can only top up your own wallet.
+        wallet.requireOwnedBy(callerId);
+
+        // Because of the check above, the idempotency scope (the owner of the wallet) is exactly the caller.
+        String ownerId = wallet.getOwnerId();
 
         String hash = RequestHasher.sha256("TOPUP|" + walletId + "|" + amount);
 

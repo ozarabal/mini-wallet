@@ -216,6 +216,31 @@ class SecurityIT extends AbstractIntegrationTest {
         assertRejected(getWithBearer(unsigned), "TOKEN_INVALID");
     }
 
+    /** A correctly signed, unexpired token from the right issuer, but with the subject chosen by the test. */
+    private static String tokenWithSubject(String subjectOrNull) throws Exception {
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
+                .issuer("mini-wallet")
+                .issueTime(new Date())
+                .expirationTime(Date.from(Instant.now().plusSeconds(600)));
+        if (subjectOrNull != null) {
+            claims.subject(subjectOrNull);
+        }
+        SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims.build());
+        jwt.sign(new MACSigner(TEST_JWT_SECRET.getBytes(StandardCharsets.UTF_8)));
+        return jwt.serialize();
+    }
+
+    @Test
+    void aSignedTokenWhoseSubjectIsNotAUserIdIsRejected() throws Exception {
+        // Even with a valid signature: our tokens always carry a user id, so anything else is not one of ours.
+        assertRejected(getWithBearer(tokenWithSubject("admin")), "TOKEN_INVALID");
+    }
+
+    @Test
+    void aSignedTokenWithoutASubjectIsRejected() throws Exception {
+        assertRejected(getWithBearer(tokenWithSubject(null)), "TOKEN_INVALID");
+    }
+
     @Test
     void aTokenUsingADifferentAlgorithmIsRejectedEvenWithTheRightSecret() throws Exception {
         // Correct key, correct claims, but HS512 instead of HS256: the decoder accepts exactly one algorithm.

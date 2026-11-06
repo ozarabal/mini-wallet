@@ -26,21 +26,29 @@ class WalletControllerIT extends AbstractIntegrationTest {
     }
 
     @Test
-    void createWalletStartsWithZeroBalance() {
-        ResponseEntity<WalletResponse> response =
-                user.post(rest, "/api/v1/wallets", Map.of("ownerId", "alice"), WalletResponse.class);
+    void createWalletStartsWithZeroBalanceAndBelongsToTheCaller() {
+        ResponseEntity<WalletResponse> response = user.post(rest, "/api/v1/wallets", null, WalletResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody().id()).isNotNull();
-        assertThat(response.getBody().ownerId()).isEqualTo("alice");
+        assertThat(response.getBody().ownerId()).isEqualTo(user.id().toString()); // taken from the token
         assertThat(response.getBody().currency()).isEqualTo("IDR");
         assertThat(response.getBody().balance()).isZero();
     }
 
     @Test
+    void anOwnerSuppliedInTheRequestIsIgnored() {
+        // A caller cannot create a wallet for somebody else by claiming an ownerId.
+        ResponseEntity<WalletResponse> response =
+                user.post(rest, "/api/v1/wallets", Map.of("ownerId", "someone-else"), WalletResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().ownerId()).isEqualTo(user.id().toString());
+    }
+
+    @Test
     void getWalletReturnsWhatWasCreated() {
-        WalletResponse created =
-                user.post(rest, "/api/v1/wallets", Map.of("ownerId", "bob"), WalletResponse.class).getBody();
+        WalletResponse created = user.post(rest, "/api/v1/wallets", null, WalletResponse.class).getBody();
 
         ResponseEntity<WalletResponse> response =
                 user.get(rest, "/api/v1/wallets/" + created.id(), WalletResponse.class);
@@ -55,14 +63,6 @@ class WalletControllerIT extends AbstractIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody()).containsEntry("code", "WALLET_NOT_FOUND");
-    }
-
-    @Test
-    void blankOwnerReturns400ValidationError() {
-        ResponseEntity<Map> response = user.post(rest, "/api/v1/wallets", Map.of("ownerId", " "), Map.class);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).containsEntry("code", "VALIDATION_ERROR");
     }
 
     @Test

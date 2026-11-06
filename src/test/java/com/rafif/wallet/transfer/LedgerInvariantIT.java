@@ -6,7 +6,6 @@ import com.rafif.wallet.AbstractIntegrationTest;
 import com.rafif.wallet.common.ApiException;
 import com.rafif.wallet.support.ConcurrentRunner;
 import com.rafif.wallet.support.LedgerInvariants;
-import com.rafif.wallet.wallet.CreateWalletRequest;
 import com.rafif.wallet.wallet.WalletService;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -22,6 +21,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /**
  * The strongest test in the project: a pile of random, overlapping operations, then the books must balance.
  * <p>
+ * Ten users own one wallet each. About 5% of the requests are made by a user who does NOT own the wallet (an attempt
+ * to spend or top up someone else's money): those must be refused and change nothing.
+ * <p>
  * The plan (which operations, in which order) is generated from a seed, so a failure can be replayed with
  * {@code ./mvnw verify -Dinvariant.seed=<seed>}. The interleaving of threads is still up to the scheduler;
  * that is the point - the invariants must hold for every interleaving.
@@ -36,12 +38,12 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
 
     enum Kind { TOP_UP, TRANSFER }
 
-    enum Outcome { APPLIED, REPLAYED, INSUFFICIENT_FUNDS, SELF_TRANSFER, KEY_REUSED }
+    enum Outcome { APPLIED, REPLAYED, INSUFFICIENT_FUNDS, SELF_TRANSFER, KEY_REUSED, NOT_OWNER }
 
-    /** One planned request. A retry is a second Op with the same key. */
-    record Op(Kind kind, UUID from, UUID to, long amount, String key) {
+    /** One planned request, made by {@code caller}. A retry is a second Op with the same key. */
+    record Op(Kind kind, UUID caller, UUID from, UUID to, long amount, String key) {
         Op withAmount(long newAmount) {
-            return new Op(kind, from, to, newAmount, key);
+            return new Op(kind, caller, from, to, newAmount, key);
         }
     }
 
@@ -58,23 +60,26 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
     void randomConcurrentOperationsKeepTheBooksBalanced() throws Exception {
         long seed = Long.getLong("invariant.seed", 20260401L);
         System.out.println("LedgerInvariantIT seed = " + seed + " (replay with -Dinvariant.seed=" + seed + ")");
-        String runId = UUID.randomUUID().toString().substring(0, 8); // keeps keys and owners unique per run
+        String runId = UUID.randomUUID().toString().substring(0, 8); // keeps keys unique per run
 
-        // --- setup: wallets start empty, and the snapshot is taken BEFORE funding so funding is checked too
+        // --- setup: ten users, one empty wallet each. The snapshot is taken BEFORE funding so funding is checked too
+        List<UUID> users = new ArrayList<>();
         List<UUID> wallets = new ArrayList<>();
         for (int i = 0; i < WALLETS; i++) {
-            wallets.add(walletService.create(new CreateWalletRequest("inv-" + runId + "-" + i)).id());
+            UUID user = newUser().id();
+            users.add(user);
+            wallets.add(walletService.create(user).id());
         }
         LedgerInvariants invariants = new LedgerInvariants(jdbc);
         List<UUID> everyone = new ArrayList<>(wallets);
         everyone.addAll(SystemWallets.CASH_IN_IDS); // top-ups come from these, so the wallet set must include all
         var start = invariants.snapshot(everyone.toArray(UUID[]::new));
         for (int i = 0; i < WALLETS; i++) {
-            topUpService.topUp("fund-" + runId + "-" + i, wallets.get(i), FUNDING);
+            topUpService.topUp(users.get(i), "fund-" + runId + "-" + i, wallets.get(i), FUNDING);
         }
 
         // --- the plan: generated entirely from the seed
-        List<Op> plan = plan(new Random(seed), wallets, runId);
+        List<Op> plan = plan(new Random(seed), users, wallets, runId);
 
         // --- run it on a busy "server": 16 threads working through 1,000 requests
         List<Callable<Outcome>> tasks = new ArrayList<>();
@@ -91,12 +96,13 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
         assertThat(counts.getOrDefault(Outcome.REPLAYED, 0)).as("replayed").isPositive();
         assertThat(counts.getOrDefault(Outcome.INSUFFICIENT_FUNDS, 0)).as("insufficient funds").isPositive();
         assertThat(counts.getOrDefault(Outcome.SELF_TRANSFER, 0)).as("self transfers").isPositive();
+        assertThat(counts.getOrDefault(Outcome.NOT_OWNER, 0)).as("attempts on someone else's wallet").isPositive();
 
         // --- the actual proof
         assertThat(invariants.check(start)).as("invariant violations (seed " + seed + ")").isEmpty();
     }
 
-    private List<Op> plan(Random random, List<UUID> wallets, String runId) {
+    private List<Op> plan(Random random, List<UUID> users, List<UUID> wallets, String runId) {
         List<Op> ops = new ArrayList<>();
         for (int i = 0; i < OPERATIONS; i++) {
             int roll = random.nextInt(100);
@@ -108,19 +114,26 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
                 boolean sameKeyDifferentBody = random.nextInt(10) == 0;
                 ops.add(sameKeyDifferentBody ? original.withAmount(original.amount() + 1) : original);
             } else if (roll < 35) {
-                ops.add(new Op(Kind.TOP_UP, null, pick(random, wallets), 1 + random.nextInt(5_000), key(runId, i)));
+                int target = random.nextInt(WALLETS);
+                ops.add(new Op(Kind.TOP_UP, callerFor(random, users, target), null, wallets.get(target),
+                        1 + random.nextInt(5_000), key(runId, i)));
             } else {
-                UUID from = pick(random, wallets);
-                UUID to = random.nextInt(10) == 0 ? from : pick(random, wallets); // ~10% accidental self-transfers
+                int from = random.nextInt(WALLETS);
+                int to = random.nextInt(10) == 0 ? from : random.nextInt(WALLETS); // ~10% accidental self-transfers
                 long amount = random.nextInt(10) == 0 ? TOO_BIG : 1 + random.nextInt(3_000);
-                ops.add(new Op(Kind.TRANSFER, from, to, amount, key(runId, i)));
+                ops.add(new Op(Kind.TRANSFER, callerFor(random, users, from), wallets.get(from), wallets.get(to),
+                        amount, key(runId, i)));
             }
         }
         return ops;
     }
 
-    private static UUID pick(Random random, List<UUID> wallets) {
-        return wallets.get(random.nextInt(wallets.size()));
+    /** Usually the wallet's owner; about 5% of the time somebody else, who must be refused. */
+    private static UUID callerFor(Random random, List<UUID> users, int ownerIndex) {
+        if (random.nextInt(20) == 0) {
+            return users.get((ownerIndex + 1 + random.nextInt(WALLETS - 1)) % WALLETS); // never the owner
+        }
+        return users.get(ownerIndex);
     }
 
     private static String key(String runId, int index) {
@@ -131,14 +144,15 @@ class LedgerInvariantIT extends AbstractIntegrationTest {
     private Outcome execute(Op op) {
         try {
             TransactionResult result = op.kind() == Kind.TOP_UP
-                    ? topUpService.topUp(op.key(), op.to(), op.amount())
-                    : transferService.transfer(op.key(), op.from(), op.to(), op.amount());
+                    ? topUpService.topUp(op.caller(), op.key(), op.to(), op.amount())
+                    : transferService.transfer(op.caller(), op.key(), op.from(), op.to(), op.amount());
             return result.replayed() ? Outcome.REPLAYED : Outcome.APPLIED;
         } catch (ApiException e) {
             return switch (e.code()) {
                 case INSUFFICIENT_FUNDS -> Outcome.INSUFFICIENT_FUNDS;
                 case SELF_TRANSFER -> Outcome.SELF_TRANSFER;
                 case IDEMPOTENCY_KEY_REUSED -> Outcome.KEY_REUSED;
+                case NOT_WALLET_OWNER -> Outcome.NOT_OWNER;
                 default -> throw e;
             };
         }

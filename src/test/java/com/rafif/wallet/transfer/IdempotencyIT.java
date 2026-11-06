@@ -57,8 +57,8 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void retryWithSameKeyAndBodyReturnsSameResultAndWritesNothingNew() {
-        UUID from = db.wallet("idem-a", 1_000);
-        UUID to = db.wallet("idem-b", 0);
+        UUID from = db.wallet(user.id().toString(), 1_000);
+        UUID to = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
 
         ResponseEntity<TransactionResponse> first = transfer(key, from, to, 300, TransactionResponse.class);
@@ -73,13 +73,13 @@ class IdempotencyIT extends AbstractIntegrationTest {
         assertThat(db.balance(to)).isEqualTo(300);
         assertThat(db.ledgerRows(from)).isEqualTo(1);
         assertThat(db.ledgerRows(to)).isEqualTo(1);
-        assertThat(db.transactionRows("idem-a")).isEqualTo(1);
+        assertThat(db.transactionRows(user.id().toString())).isEqualTo(1);
     }
 
     @Test
     void sameKeyWithDifferentAmountReturns422() {
-        UUID from = db.wallet("idem-c", 1_000);
-        UUID to = db.wallet("idem-d", 0);
+        UUID from = db.wallet(user.id().toString(), 1_000);
+        UUID to = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
         transfer(key, from, to, 300, TransactionResponse.class);
 
@@ -92,9 +92,9 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void sameKeyWithDifferentDestinationReturns422() {
-        UUID from = db.wallet("idem-e", 1_000);
-        UUID to = db.wallet("idem-f", 0);
-        UUID other = db.wallet("idem-g", 0);
+        UUID from = db.wallet(user.id().toString(), 1_000);
+        UUID to = db.wallet(user.id().toString(), 0);
+        UUID other = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
         transfer(key, from, to, 300, TransactionResponse.class);
 
@@ -107,7 +107,7 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void topUpRetryIsReplayedToo() {
-        UUID wallet = db.wallet("idem-h", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
 
         ResponseEntity<TransactionResponse> first = topUp(key, wallet, 500, TransactionResponse.class);
@@ -122,8 +122,8 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void sameKeyForTopUpAndTransferByTheSameOwnerReturns422() {
-        UUID wallet = db.wallet("idem-i", 0);
-        UUID other = db.wallet("idem-j", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
+        UUID other = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
         topUp(key, wallet, 500, TransactionResponse.class);
 
@@ -136,8 +136,8 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void failedRequestDoesNotConsumeTheKey() {
-        UUID from = db.wallet("idem-k", 0);
-        UUID to = db.wallet("idem-l", 0);
+        UUID from = db.wallet(user.id().toString(), 0);
+        UUID to = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
 
         ResponseEntity<Map> failed = transfer(key, from, to, 100, Map.class);
@@ -154,20 +154,20 @@ class IdempotencyIT extends AbstractIntegrationTest {
     /** Counts across the WHOLE database, so a stray extra row anywhere would be noticed. */
     @Test
     void manyReplaysAddNoRowsAnywhereInTheDatabase() throws Exception {
-        UUID from = db.wallet("idem-p", 1_000);
-        UUID to = db.wallet("idem-q", 0);
+        UUID from = db.wallet(user.id().toString(), 1_000);
+        UUID to = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
-        transferService.transfer(key, from, to, 100); // the one real application of this request
+        transferService.transfer(user.id(), key, from, to, 100); // the one real application of this request
 
         int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM ledger_entries", Integer.class);
         int transactionsBefore = jdbc.queryForObject("SELECT count(*) FROM transactions", Integer.class);
         var start = invariants.snapshot(from, to);
 
         for (int i = 0; i < 25; i++) {
-            assertThat(transferService.transfer(key, from, to, 100).replayed()).isTrue(); // one after another
+            assertThat(transferService.transfer(user.id(), key, from, to, 100).replayed()).isTrue(); // one after another
         }
         List<TransactionResult> concurrent =
-                ConcurrentRunner.runRepeated(25, () -> transferService.transfer(key, from, to, 100)); // all at once
+                ConcurrentRunner.runRepeated(25, () -> transferService.transfer(user.id(), key, from, to, 100)); // all at once
         assertThat(concurrent).allMatch(TransactionResult::replayed);
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entries", Integer.class)).isEqualTo(ledgerBefore);
@@ -179,31 +179,31 @@ class IdempotencyIT extends AbstractIntegrationTest {
 
     @Test
     void concurrentTransfersWithTheSameKeyApplyExactlyOnce() throws Exception {
-        UUID from = db.wallet("idem-m", 1_000);
-        UUID to = db.wallet("idem-n", 0);
+        UUID from = db.wallet(user.id().toString(), 1_000);
+        UUID to = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(from, to);
         String key = UUID.randomUUID().toString();
 
         List<TransactionResult> results =
-                ConcurrentRunner.runRepeated(20, () -> transferService.transfer(key, from, to, 100));
+                ConcurrentRunner.runRepeated(20, () -> transferService.transfer(user.id(), key, from, to, 100));
 
         assertThat(results.stream().filter(r -> !r.replayed())).hasSize(1); // exactly one winner
         assertThat(results.stream().map(r -> r.transaction().transactionId()).distinct()).hasSize(1);
         assertThat(db.balance(from)).isEqualTo(900); // 100 moved once, not 20 times
         assertThat(db.balance(to)).isEqualTo(100);
         assertThat(db.ledgerRows(from)).isEqualTo(1);
-        assertThat(db.transactionRows("idem-m")).isEqualTo(1);
+        assertThat(db.transactionRows(user.id().toString())).isEqualTo(1);
         invariants.assertHolds(start);
     }
 
     @Test
     void concurrentTopUpsWithTheSameKeyApplyExactlyOnce() throws Exception {
-        UUID wallet = db.wallet("idem-o", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(TransferTestSupport.withAllCashIn(wallet));
         String key = UUID.randomUUID().toString();
 
         List<TransactionResult> results =
-                ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(key, wallet, 250));
+                ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(user.id(), key, wallet, 250));
 
         assertThat(results.stream().filter(r -> !r.replayed())).hasSize(1);
         assertThat(db.balance(wallet)).isEqualTo(250);

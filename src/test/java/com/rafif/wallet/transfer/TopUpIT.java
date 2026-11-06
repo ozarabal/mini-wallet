@@ -53,7 +53,7 @@ class TopUpIT extends AbstractIntegrationTest {
 
     @Test
     void topUpCreditsWalletAndDebitsCashInWallet() {
-        UUID wallet = db.wallet("topup-1", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         String key = UUID.randomUUID().toString();
         UUID cashIn = SystemWallets.cashInFor(key); // the idempotency key decides which cash-in wallet pays
         long cashInBefore = db.balance(cashIn);
@@ -77,8 +77,8 @@ class TopUpIT extends AbstractIntegrationTest {
 
     @Test
     void toppedUpMoneyCanBeTransferred() {
-        UUID from = db.wallet("topup-2", 0);
-        UUID to = db.wallet("topup-3", 0);
+        UUID from = db.wallet(user.id().toString(), 0);
+        UUID to = db.wallet(user.id().toString(), 0);
         topUp(from, UUID.randomUUID().toString(), Map.of("amount", 1_000), TransactionResponse.class);
 
         HttpHeaders headers = user.headers();
@@ -103,7 +103,7 @@ class TopUpIT extends AbstractIntegrationTest {
 
     @Test
     void zeroOrNegativeAmountReturns400() {
-        UUID wallet = db.wallet("topup-4", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         for (long bad : new long[] {0, -100}) {
             ResponseEntity<Map> response =
                     topUp(wallet, UUID.randomUUID().toString(), Map.of("amount", bad), Map.class);
@@ -115,7 +115,7 @@ class TopUpIT extends AbstractIntegrationTest {
 
     @Test
     void missingIdempotencyKeyReturns400() {
-        UUID wallet = db.wallet("topup-5", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
 
         ResponseEntity<Map> response = topUp(wallet, null, Map.of("amount", 100), Map.class);
 
@@ -136,11 +136,11 @@ class TopUpIT extends AbstractIntegrationTest {
     /** Top-ups that pick the same cash-in wallet take turns on it: none may be lost. */
     @Test
     void concurrentTopUpsAreAllApplied() throws Exception {
-        UUID wallet = db.wallet("topup-6", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(TransferTestSupport.withAllCashIn(wallet));
 
         // each call uses its own random key, so all 20 are different requests
-        ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(UUID.randomUUID().toString(), wallet, 50));
+        ConcurrentRunner.runRepeated(20, () -> topUpService.topUp(user.id(), UUID.randomUUID().toString(), wallet, 50));
 
         assertThat(db.balance(wallet)).isEqualTo(1_000);
         assertThat(db.ledgerRows(wallet)).isEqualTo(20);
@@ -151,14 +151,14 @@ class TopUpIT extends AbstractIntegrationTest {
     /** The point of having several cash-in wallets: top-ups really are paid from different ones. */
     @Test
     void topUpsAreSpreadOverSeveralCashInWallets() throws Exception {
-        UUID wallet = db.wallet("topup-7", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(TransferTestSupport.withAllCashIn(wallet));
 
         // Fixed keys, so which cash-in wallet each one picks is fixed too: this test is deterministic.
         List<Callable<Boolean>> tasks = new ArrayList<>();
         for (int i = 0; i < 64; i++) {
             String key = "spread-" + i;
-            tasks.add(() -> topUpService.topUp(key, wallet, 10).transaction() != null);
+            tasks.add(() -> topUpService.topUp(user.id(), key, wallet, 10).transaction() != null);
         }
         ConcurrentRunner.runAll(tasks);
 
@@ -179,16 +179,16 @@ class TopUpIT extends AbstractIntegrationTest {
      */
     @Test
     void topUpsAndTransfersTogetherDoNotDeadlock() throws Exception {
-        UUID a = db.wallet("mix-a", 100_000);
-        UUID b = db.wallet("mix-b", 100_000);
+        UUID a = db.wallet(user.id().toString(), 100_000);
+        UUID b = db.wallet(user.id().toString(), 100_000);
         var start = invariants.snapshot(TransferTestSupport.withAllCashIn(a, b));
 
         List<Callable<Boolean>> tasks = new ArrayList<>();
         for (int i = 0; i < 100; i++) {
-            tasks.add(() -> topUpService.topUp(UUID.randomUUID().toString(), a, 5).transaction() != null);
-            tasks.add(() -> topUpService.topUp(UUID.randomUUID().toString(), b, 5).transaction() != null);
-            tasks.add(() -> transferService.transfer(UUID.randomUUID().toString(), a, b, 10).transaction() != null);
-            tasks.add(() -> transferService.transfer(UUID.randomUUID().toString(), b, a, 10).transaction() != null);
+            tasks.add(() -> topUpService.topUp(user.id(), UUID.randomUUID().toString(), a, 5).transaction() != null);
+            tasks.add(() -> topUpService.topUp(user.id(), UUID.randomUUID().toString(), b, 5).transaction() != null);
+            tasks.add(() -> transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 10).transaction() != null);
+            tasks.add(() -> transferService.transfer(user.id(), UUID.randomUUID().toString(), b, a, 10).transaction() != null);
         }
         ConcurrentRunner.runAll(tasks); // a deadlock victim error or a timeout fails the test here
 

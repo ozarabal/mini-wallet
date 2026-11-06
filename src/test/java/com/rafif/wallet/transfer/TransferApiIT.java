@@ -47,8 +47,8 @@ class TransferApiIT extends AbstractIntegrationTest {
 
     @Test
     void transferMovesMoneyAndWritesBalancedLedgerEntries() {
-        UUID alice = db.wallet("alice-1", 1_000);
-        UUID bob = db.wallet("bob-1", 0);
+        UUID alice = db.wallet(user.id().toString(), 1_000);
+        UUID bob = db.wallet(user.id().toString(), 0);
 
         ResponseEntity<TransactionResponse> response =
                 post(UUID.randomUUID().toString(), body(alice, bob, 300), TransactionResponse.class);
@@ -71,8 +71,8 @@ class TransferApiIT extends AbstractIntegrationTest {
 
     @Test
     void insufficientFundsReturns422AndWritesNothing() {
-        UUID carol = db.wallet("carol-1", 100);
-        UUID dave = db.wallet("dave-1", 0);
+        UUID carol = db.wallet(user.id().toString(), 100);
+        UUID dave = db.wallet(user.id().toString(), 0);
 
         ResponseEntity<Map> response = post(UUID.randomUUID().toString(), body(carol, dave, 101), Map.class);
 
@@ -81,12 +81,12 @@ class TransferApiIT extends AbstractIntegrationTest {
         assertThat(db.balance(carol)).isEqualTo(100);
         assertThat(db.balance(dave)).isZero();
         assertThat(db.ledgerRows(carol)).isZero();
-        assertThat(db.transactionRows("carol-1")).isZero(); // the transaction row was rolled back too
+        assertThat(db.transactionRows(user.id().toString())).isZero(); // the transaction row was rolled back too
     }
 
     @Test
     void transferToSelfReturns400() {
-        UUID erin = db.wallet("erin-1", 500);
+        UUID erin = db.wallet(user.id().toString(), 500);
 
         ResponseEntity<Map> response = post(UUID.randomUUID().toString(), body(erin, erin, 10), Map.class);
 
@@ -97,7 +97,7 @@ class TransferApiIT extends AbstractIntegrationTest {
 
     @Test
     void unknownWalletReturns404() {
-        UUID frank = db.wallet("frank-1", 500);
+        UUID frank = db.wallet(user.id().toString(), 500);
 
         ResponseEntity<Map> response = post(UUID.randomUUID().toString(), body(frank, UUID.randomUUID(), 10), Map.class);
 
@@ -116,8 +116,8 @@ class TransferApiIT extends AbstractIntegrationTest {
 
     @Test
     void zeroOrNegativeAmountReturns400() {
-        UUID a = db.wallet("grace-1", 500);
-        UUID b = db.wallet("heidi-1", 0);
+        UUID a = db.wallet(user.id().toString(), 500);
+        UUID b = db.wallet(user.id().toString(), 0);
 
         for (long bad : new long[] {0, -5}) {
             ResponseEntity<Map> response = post(UUID.randomUUID().toString(), body(a, b, bad), Map.class);

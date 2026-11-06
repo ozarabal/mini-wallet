@@ -25,21 +25,23 @@ class LedgerInvariantsIT extends AbstractIntegrationTest {
 
     TransferTestSupport db;
     LedgerInvariants invariants;
+    TestUser user;
 
     @BeforeEach
     void setUp() {
         db = new TransferTestSupport(jdbc);
         invariants = new LedgerInvariants(jdbc);
+        user = newUser();
     }
 
     @Test
     void holdsAfterNormalTransfers() {
-        UUID a = db.wallet("inv-a", 1_000);
-        UUID b = db.wallet("inv-b", 500);
+        UUID a = db.wallet(user.id().toString(), 1_000);
+        UUID b = db.wallet(user.id().toString(), 500);
         var start = invariants.snapshot(a, b);
 
-        transferService.transfer(UUID.randomUUID().toString(), a, b, 300);
-        transferService.transfer(UUID.randomUUID().toString(), b, a, 50);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 300);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), b, a, 50);
 
         assertThat(invariants.check(start)).isEmpty();
     }
@@ -47,22 +49,22 @@ class LedgerInvariantsIT extends AbstractIntegrationTest {
     /** The cash-in wallet is like this: it has history from earlier operations before any test starts. */
     @Test
     void onlyChecksWhatHappenedAfterTheSnapshotForWalletsWithHistory() {
-        UUID a = db.wallet("inv-i", 1_000);
-        UUID b = db.wallet("inv-j", 0);
-        transferService.transfer(UUID.randomUUID().toString(), a, b, 100); // history exists before the snapshot
+        UUID a = db.wallet(user.id().toString(), 1_000);
+        UUID b = db.wallet(user.id().toString(), 0);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 100); // history exists before the snapshot
         var start = invariants.snapshot(a, b);
 
-        transferService.transfer(UUID.randomUUID().toString(), a, b, 50);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 50);
 
         assertThat(invariants.check(start)).isEmpty();
     }
 
     @Test
     void detectsBalanceChangedWithoutLedgerEntry() {
-        UUID a = db.wallet("inv-c", 1_000);
-        UUID b = db.wallet("inv-d", 0);
+        UUID a = db.wallet(user.id().toString(), 1_000);
+        UUID b = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(a, b);
-        transferService.transfer(UUID.randomUUID().toString(), a, b, 100);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 100);
 
         jdbc.update("UPDATE wallets SET balance = balance + 7 WHERE id = ?", a); // money from nowhere
 
@@ -73,7 +75,7 @@ class LedgerInvariantsIT extends AbstractIntegrationTest {
 
     @Test
     void detectsUnbalancedTransaction() {
-        UUID a = db.wallet("inv-e", 1_000);
+        UUID a = db.wallet(user.id().toString(), 1_000);
         var start = invariants.snapshot(a);
         UUID tx = UUID.randomUUID();
         jdbc.update("INSERT INTO transactions (id, type, status, idempotency_key, request_hash, owner_id) "
@@ -87,7 +89,7 @@ class LedgerInvariantsIT extends AbstractIntegrationTest {
 
     @Test
     void detectsPendingTransactionLeftBehind() {
-        UUID a = db.wallet("inv-f", 1_000);
+        UUID a = db.wallet(user.id().toString(), 1_000);
         var start = invariants.snapshot(a);
         UUID tx = UUID.randomUUID();
         jdbc.update("INSERT INTO transactions (id, type, status, idempotency_key, request_hash, owner_id) "
@@ -101,10 +103,10 @@ class LedgerInvariantsIT extends AbstractIntegrationTest {
 
     @Test
     void detectsWrongBalanceAfterInAnEntry() {
-        UUID a = db.wallet("inv-g", 1_000);
-        UUID b = db.wallet("inv-h", 0);
+        UUID a = db.wallet(user.id().toString(), 1_000);
+        UUID b = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(a, b);
-        transferService.transfer(UUID.randomUUID().toString(), a, b, 100);
+        transferService.transfer(user.id(), UUID.randomUUID().toString(), a, b, 100);
 
         jdbc.update("UPDATE ledger_entries SET balance_after = balance_after + 1 WHERE wallet_id = ?", b);
 

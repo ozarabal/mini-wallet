@@ -49,6 +49,16 @@ public class Wallet {
         return w;
     }
 
+    /**
+     * Throws unless this wallet belongs to the given user. The cash-in wallets belong to "SYSTEM", which is never
+     * a user id, so no user passes this check for them.
+     */
+    public void requireOwnedBy(UUID userId) {
+        if (!ownerId.equals(userId.toString())) {
+            throw new ApiException(ErrorCode.NOT_WALLET_OWNER, "Wallet " + id + " does not belong to you");
+        }
+    }
+
     /** Removes money. The balance can never go below zero (the DB CHECK constraint is the second line of defence). */
     public void debit(long amount) {
         requirePositive(amount);

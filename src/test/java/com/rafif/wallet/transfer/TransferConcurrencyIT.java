@@ -54,7 +54,7 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
     /** Transfer through the service; returns true if applied, false if refused for lack of funds. */
     private boolean tryTransfer(UUID from, UUID to, long amount) {
         try {
-            transferService.transfer(key(), from, to, amount);
+            transferService.transfer(user.id(), key(), from, to, amount);
             return true;
         } catch (ApiException e) {
             assertThat(e.code()).isEqualTo(ErrorCode.INSUFFICIENT_FUNDS); // the only acceptable failure
@@ -65,8 +65,8 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
     @Test
     void hundredConcurrentTransfersOutOfOneWalletNeverOverdraw() throws Exception {
         // 3,050 funds exactly 30 transfers of 100 and leaves 50 behind: 70 of the 100 requests must be refused.
-        UUID source = db.wallet("conc-source", 3_050);
-        UUID target = db.wallet("conc-target", 0);
+        UUID source = db.wallet(user.id().toString(), 3_050);
+        UUID target = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(source, target);
 
         List<Callable<Boolean>> tasks = new ArrayList<>();
@@ -84,8 +84,8 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
 
     @Test
     void hundredConcurrentHttpTransfersNeverOverdrawAndNeverReturn5xx() throws Exception {
-        UUID source = db.wallet("http-source", 3_050);
-        UUID target = db.wallet("http-target", 0);
+        UUID source = db.wallet(user.id().toString(), 3_050);
+        UUID target = db.wallet(user.id().toString(), 0);
         var start = invariants.snapshot(source, target);
 
         List<Callable<Integer>> tasks = new ArrayList<>();
@@ -109,8 +109,8 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
 
     @Test
     void oppositeTransfersDoNotDeadlockAcrossManyRounds() throws Exception {
-        UUID a = db.wallet("dead-a", 100_000);
-        UUID b = db.wallet("dead-b", 100_000);
+        UUID a = db.wallet(user.id().toString(), 100_000);
+        UUID b = db.wallet(user.id().toString(), 100_000);
         var start = invariants.snapshot(a, b);
 
         for (int round = 0; round < 5; round++) {
@@ -131,9 +131,9 @@ class TransferConcurrencyIT extends AbstractIntegrationTest {
     /** A to B, B to C, C to A: three wallets whose locks overlap pairwise, which is the classic cycle. */
     @Test
     void circularTransfersAmongThreeWalletsDoNotDeadlock() throws Exception {
-        UUID a = db.wallet("ring-a", 50_000);
-        UUID b = db.wallet("ring-b", 50_000);
-        UUID c = db.wallet("ring-c", 50_000);
+        UUID a = db.wallet(user.id().toString(), 50_000);
+        UUID b = db.wallet(user.id().toString(), 50_000);
+        UUID c = db.wallet(user.id().toString(), 50_000);
         var start = invariants.snapshot(a, b, c);
 
         List<Callable<Boolean>> tasks = new ArrayList<>();

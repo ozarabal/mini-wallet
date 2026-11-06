@@ -48,11 +48,11 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
 
     /** alice: +1000 (top-up), -300 (to bob), +100 (from bob). */
     private UUID[] aliceAndBob() {
-        UUID alice = db.wallet("hist-alice", 0);
-        UUID bob = db.wallet("hist-bob", 0);
-        topUpService.topUp(key(), alice, 1_000);
-        transferService.transfer(key(), alice, bob, 300);
-        transferService.transfer(key(), bob, alice, 100);
+        UUID alice = db.wallet(user.id().toString(), 0);
+        UUID bob = db.wallet(user.id().toString(), 0);
+        topUpService.topUp(user.id(), key(), alice, 1_000);
+        transferService.transfer(user.id(), key(), alice, bob, 300);
+        transferService.transfer(user.id(), key(), bob, alice, 100);
         return new UUID[] {alice, bob};
     }
 
@@ -110,7 +110,7 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
 
     @Test
     void walletWithoutEntriesHasEmptyHistory() {
-        UUID empty = db.wallet("hist-empty", 0);
+        UUID empty = db.wallet(user.id().toString(), 0);
 
         JsonNode page = history(empty, "");
 
@@ -129,7 +129,7 @@ class LedgerHistoryIT extends AbstractIntegrationTest {
 
     @Test
     void invalidPagingParametersReturn400() {
-        UUID wallet = db.wallet("hist-bad-paging", 0);
+        UUID wallet = db.wallet(user.id().toString(), 0);
 
         for (String query : new String[] {"?size=0", "?size=101", "?page=-1"}) {
             ResponseEntity<Map> response =

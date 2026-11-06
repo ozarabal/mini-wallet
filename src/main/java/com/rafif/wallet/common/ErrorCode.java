@@ -18,6 +18,8 @@ public enum ErrorCode {
     /** A token was sent but is bad: wrong signature, expired, wrong issuer, unsigned, malformed. */
     TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "Access token is invalid or has expired"),
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access denied"),
+    /** Logged in, but the wallet belongs to someone else (or to the system). */
+    NOT_WALLET_OWNER(HttpStatus.FORBIDDEN, "You do not own this wallet"),
     WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Wallet not found"),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "Resource not found"),
     /** Other HTTP-level rejections from Spring (wrong method, unsupported media type...). Status comes from Spring. */
