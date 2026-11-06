@@ -20,6 +20,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  *   <li>Each transaction's debits equal its credits, and none is left PENDING.</li>
  *   <li>No negative balance.</li>
  *   <li>Each wallet's new entries replay in order: every {@code balance_after} matches the running total.</li>
+ *   <li>Every completed transaction has exactly one outbox event.</li>
  * </ol>
  * The set of wallets must be <b>closed</b>: every transaction touching them must only touch wallets in the set
  * (a top-up therefore needs the cash-in wallet in the set). Take the snapshot BEFORE the operations start.
@@ -118,6 +119,20 @@ public class LedgerInvariants {
             if (!"COMPLETED".equals(rs.getString("status"))) {
                 violations.add("transaction " + rs.getObject("id") + " is " + rs.getString("status"));
             }
+        });
+
+        // 6. every completed transaction was announced exactly once (the outbox row is written in the same database
+        //    transaction as the ledger entries, so these two can never disagree).
+        jdbc.query("""
+                SELECT t.id, count(o.id) AS events
+                FROM transactions t LEFT JOIN outbox_events o ON o.aggregate_id = t.id
+                WHERE t.status = 'COMPLETED'
+                  AND t.id IN (SELECT transaction_id FROM ledger_entries WHERE wallet_id IN (:ids))
+                GROUP BY t.id
+                HAVING count(o.id) <> 1
+                """, ids, rs -> {
+            violations.add("transaction " + rs.getObject("id") + " has " + rs.getLong("events")
+                    + " outbox events instead of 1");
         });
 
         // 5. new entries replay in order. Entries of one wallet are written while holding its row lock,

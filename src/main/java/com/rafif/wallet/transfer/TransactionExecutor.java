@@ -3,14 +3,16 @@ package com.rafif.wallet.transfer;
 import com.rafif.wallet.ledger.Transaction;
 import com.rafif.wallet.ledger.TransactionRepository;
 import com.rafif.wallet.ledger.TransactionType;
+import com.rafif.wallet.outbox.OutboxEventType;
+import com.rafif.wallet.outbox.OutboxWriter;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
  * The transactional core. Each method is ONE database transaction: if any step fails (for example
- * insufficient funds, or a duplicate idempotency key) the transaction row, the balance changes and the
- * ledger entries are all rolled back together.
+ * insufficient funds, or a duplicate idempotency key) the transaction row, the balance changes, the
+ * ledger entries and the outbox event are all rolled back together.
  * <p>
  * It deliberately does not handle idempotency replays: a failed database transaction cannot be reused,
  * so the retry logic lives outside, in {@link IdempotencyService}.
@@ -22,10 +24,14 @@ class TransactionExecutor {
     private final TransactionRepository transactions;
     private final MoneyMover moneyMover;
 
-    TransactionExecutor(WalletLocker walletLocker, TransactionRepository transactions, MoneyMover moneyMover) {
+    private final OutboxWriter outboxWriter;
+
+    TransactionExecutor(WalletLocker walletLocker, TransactionRepository transactions, MoneyMover moneyMover,
+                        OutboxWriter outboxWriter) {
         this.walletLocker = walletLocker;
         this.transactions = transactions;
         this.moneyMover = moneyMover;
+        this.outboxWriter = outboxWriter;
     }
 
     @Transactional
@@ -40,6 +46,10 @@ class TransactionExecutor {
         // 3. Move the money and write the two ledger entries.
         moneyMover.move(tx.getId(), locked.from(), locked.to(), amount);
         tx.markCompleted();
+
+        // 4. Announce it. Same transaction: the event exists if and only if the money moved. Kafka key = the paying
+        //    wallet, so its transfers are published (and consumed) in the order they happened.
+        outboxWriter.record(OutboxEventType.TRANSFER_COMPLETED, tx.getId(), fromId, toId, amount, fromId.toString());
 
         return TransactionResponse.of(tx, fromId, toId, amount);
     }
@@ -60,6 +70,10 @@ class TransactionExecutor {
 
         moneyMover.move(tx.getId(), locked.from(), locked.to(), amount);
         tx.markCompleted();
+
+        // The paying wallet is one of 16 shared cash-in wallets, which says nothing useful about order, so a top-up
+        // is keyed by the wallet that receives the money.
+        outboxWriter.record(OutboxEventType.TOPUP_COMPLETED, tx.getId(), cashIn, walletId, amount, walletId.toString());
 
         return TransactionResponse.of(tx, cashIn, walletId, amount);
     }
