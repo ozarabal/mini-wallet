@@ -206,3 +206,62 @@ experiment changed one line. After all of them, a clean build on the original co
 - Not tried: moving the ownership check after the idempotency lookup (to show the key-leak test catches it), and
   wrong-algorithm or wrong-issuer decoders. `SecurityIT` has tests for those, but I did not mutate the code to prove
   they fail.
+
+## 7. Authentication, ownership and rate limiting (M3)
+
+### Tokens: signed JWT checked by Spring's resource server
+
+| Choice | Why | Alternatives considered |
+|---|---|---|
+| Self-contained JWT, HS256, 15-minute lifetime | Every request is verified from the signature alone: no database read per request. One app both issues and checks tokens, so one shared secret is enough. | **Server-side sessions**: needs shared session storage, and CSRF protection because of cookies. **RS256/ES256 (key pair)**: worth it when *other* services verify tokens without being able to mint them; nobody else verifies here, so it would only add key handling. |
+| Only Spring's own starters (`security`, `oauth2-resource-server`); no third-party JWT or rate-limit library | Fewer dependencies to explain; the resource server already does signature, expiry and issuer checks well. | `jjwt`, `auth0 java-jwt`: extra dependency for what the starter does. Bucket4j for rate limiting: see below. |
+| Decoder **pinned to HS256**, issuer checked, 5 s clock skew, subject must be a UUID | Closes the classic holes: `alg=none` and algorithm confusion (HS512, RS256) are rejected; a validly signed token with a junk subject is rejected instead of crashing later. Spring's default 60 s skew was reduced because one app issues and checks. | Default decoder settings. |
+| Secret from `JWT_SECRET`, at least 32 bytes, **no default**: the app will not start without it | A forgotten secret must not silently become a well-known one. `docker-compose.yml` has a clearly named dev-only value so `docker compose up` works. | A default in `application.yml` (a leaked default means anyone can mint tokens). |
+| BCrypt, passwords of 8-72 bytes, usernames lowercased | BCrypt only reads 72 bytes, so longer input would be silently truncated; refusing it is honest. Lowercasing makes `Alice` and `alice` the same account. | Argon2 (better, but not in the listed dependencies; BCrypt ships with Spring Security). |
+| Unknown user at login runs a dummy BCrypt compare and returns the same 401 as a wrong password | Without it, the response *time* would tell an attacker which usernames exist. | Returning a different error for an unknown user (leaks which names are registered). |
+
+### Who may do what
+
+- The wallet owner comes **only from the token** (`POST /wallets` has no body). A request cannot name an owner.
+- Owner-only: read balance, read history, top up, spend. Anyone may pay *into* a wallet (that is how people receive
+  money). Reading is owner-only too, because a balance and a history are private financial data.
+- **403 for someone else's wallet, 404 for an unknown one.** This lets a caller tell "exists but not mine" from
+  "does not exist". Wallet ids are random UUIDs, so guessing one is not practical, and the clearer error is more
+  useful to honest clients. If ids were guessable (sequential numbers) this would have to become 404 for both.
+  The self-transfer check (400) runs *before* the ownership check so it cannot be used to probe wallets either way.
+- **The ownership check runs before the idempotency lookup.** Otherwise anyone who learned someone's key could
+  replay it and read back the stored result. Keys are also scoped by the owner id (the existing unique constraint is
+  `(owner_id, idempotency_key)`), so two users using the same key do not collide. Both are tested.
+- The 16 system cash-in wallets belong to the owner `SYSTEM`, which no user id equals, so no user can spend from or
+  read them. Before this check any user could "transfer" money out of a cash-in wallet to themselves: free money.
+  `OwnershipIT.nobodyCanTakeMoneyOutOfACashInWallet` covers it.
+- The ownership check is a read before the locking query (one extra primary-key lookup). The alternative, checking
+  after taking the lock, would hold row locks while refusing strangers, which a flood of unauthorised requests
+  could use to slow down the real owner. Ownership of a wallet never changes, so the unlocked read cannot go stale.
+
+### Rate limiting: hand-written token bucket, per user, in memory
+
+| Choice | Why | Alternatives considered |
+|---|---|---|
+| Token bucket (burst 20, refill 10/s), per user, `POST /transfers` only | Allows short bursts but caps the sustained rate; simple enough to explain and test line by line. Top-ups and reads are not limited here (they could be; transfers are the main target). | **Fixed window counter**: lets 2x the limit through around a window boundary. **Sliding window log**: exact, but stores a timestamp per request. |
+| Written by hand (about 100 lines) with an injectable `Clock` | No new dependency; unit tests run with a fake clock and no sleeping. | **Bucket4j**: well tested and supports Redis, but it is a dependency to justify, and the goal is code I can explain. |
+| In the security filter chain, after token verification | The limit is per user, which is only known once the token is verified. Unauthenticated requests are answered 401 and never use anyone's budget. | A servlet filter before security (cannot know the user); limiting by IP (shared by many users behind one address). |
+| Every request counts, including replays and requests that later fail validation | The limiter protects server capacity; a replay still costs a database lookup. | Counting only applied transfers (would let an attacker hammer the replay path for free). |
+| Idle buckets removed by a sweep every 60 s | Memory stays proportional to *active* users. A full bucket equals a brand-new one, so dropping it changes nothing. | Never removing (leak); a background thread (needless complexity). |
+
+### Known gaps (deliberately out of scope, listed so nobody assumes otherwise)
+
+- **No refresh tokens and no revocation.** A stolen token works for up to 15 minutes; logging out cannot invalidate
+  it. A token also stays valid if its user were deleted (there is no delete-user feature). Fixing this needs a
+  token store or short tokens plus refresh tokens.
+- **No brute-force protection on login.** BCrypt makes each guess slow, but nothing limits guesses per account or per
+  address. The rate limiter could be applied to `/auth/login` keyed by username/IP.
+- **The rate limiter is per application instance.** With N instances the real limit is N times higher, and a restart
+  resets every bucket. A shared limiter (Redis) is the fix once there is more than one instance.
+- **`/actuator/prometheus` and `/actuator/health` are public**, as is Swagger. Fine for a local demo; to be locked
+  down or moved to a separate management port in M5.
+- **HS256 means the secret both signs and verifies**: anyone who can verify tokens could also forge them. That is
+  acceptable while only this app verifies tokens.
+- **Passwords have a length rule only**, no breached-password check or complexity policy.
+- **Old data**: wallets created before M3 have free-text owners (such as "alice") that match no user id, so they are
+  unreachable. There was no production data; a clean database (`docker compose down -v`) is the migration.

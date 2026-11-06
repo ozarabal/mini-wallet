@@ -16,41 +16,82 @@ Health: `/actuator/health` · Prometheus metrics: `/actuator/prometheus`.
 
 ## Try it with curl
 
-Amounts are integers in minor units (IDR has no decimals). Every write needs an `Idempotency-Key` header.
+Amounts are integers in minor units (IDR has no decimals). Every write needs an `Idempotency-Key` header, and every
+call except register/login needs `Authorization: Bearer <token>`.
 
 ```bash
-# 1. create two wallets (note the "id" in each response)
-curl -s -X POST localhost:8080/api/v1/wallets -H 'Content-Type: application/json' -d '{"ownerId":"alice"}'
-curl -s -X POST localhost:8080/api/v1/wallets -H 'Content-Type: application/json' -d '{"ownerId":"bob"}'
+# 1. register two users and log in (the token is valid for 15 minutes)
+curl -s -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password-1"}'
+curl -s -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob-password-123"}'
+
+ALICE_TOKEN=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password-1"}' | sed 's/.*"accessToken":"\([^"]*\)".*/\1/')
+BOB_TOKEN=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob-password-123"}' | sed 's/.*"accessToken":"\([^"]*\)".*/\1/')
+
+# 2. each user creates a wallet (no body: the owner is whoever the token says). Note the "id" in each response.
+curl -s -X POST localhost:8080/api/v1/wallets -H "Authorization: Bearer $ALICE_TOKEN"
+curl -s -X POST localhost:8080/api/v1/wallets -H "Authorization: Bearer $BOB_TOKEN"
 
 ALICE=<alice wallet id>
 BOB=<bob wallet id>
 
-# 2. top up alice with 100000
+# 3. top up alice's wallet with 100000
 curl -s -X POST localhost:8080/api/v1/wallets/$ALICE/topups \
-  -H 'Content-Type: application/json' -H 'Idempotency-Key: topup-1' -d '{"amount":100000}'
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: topup-1' -d '{"amount":100000}'
 
-# 3. transfer 25000 from alice to bob
+# 4. transfer 25000 from alice to bob
 curl -s -X POST localhost:8080/api/v1/transfers \
-  -H 'Content-Type: application/json' -H 'Idempotency-Key: transfer-1' \
+  -H "Authorization: Bearer $ALICE_TOKEN" -H 'Content-Type: application/json' -H 'Idempotency-Key: transfer-1' \
   -d "{\"fromWalletId\":\"$ALICE\",\"toWalletId\":\"$BOB\",\"amount\":25000}"
 
-# 4. repeat step 3 exactly: HTTP 200, the same transactionId, and no money moves a second time
+# 5. repeat step 4 exactly: HTTP 200, the same transactionId, and no money moves a second time
 
-# 5. check balances and history (newest first, paginated)
-curl -s localhost:8080/api/v1/wallets/$ALICE
-curl -s "localhost:8080/api/v1/wallets/$ALICE/transactions?page=0&size=20"
+# 6. check balances and history (newest first, paginated). Only the owner can read a wallet.
+curl -s localhost:8080/api/v1/wallets/$ALICE -H "Authorization: Bearer $ALICE_TOKEN"
+curl -s "localhost:8080/api/v1/wallets/$ALICE/transactions?page=0&size=20" -H "Authorization: Bearer $ALICE_TOKEN"
+
+# 7. bob tries to spend alice's money: HTTP 403, code NOT_WALLET_OWNER, nothing changes
+curl -s -X POST localhost:8080/api/v1/transfers \
+  -H "Authorization: Bearer $BOB_TOKEN" -H 'Content-Type: application/json' -H 'Idempotency-Key: steal-1' \
+  -d "{\"fromWalletId\":\"$ALICE\",\"toWalletId\":\"$BOB\",\"amount\":1}"
 ```
+
+In Swagger UI use the **Authorize** button and paste the token from login.
+
+## Security
+
+- **Login and tokens.** `POST /api/v1/auth/register` and `/login` are the only public write endpoints. Passwords are
+  stored as BCrypt hashes. Login returns a signed JWT (HS256, 15 minutes, issuer `mini-wallet`); the app refuses to
+  start without a `JWT_SECRET` of at least 32 bytes. `docker-compose.yml` has a dev-only default; set your own for
+  anything real. Wrong username and wrong password give the same 401, and take about the same time.
+- **Every other endpoint needs a valid token**: 401 `UNAUTHENTICATED` (no token) or `TOKEN_INVALID` (bad, expired,
+  forged, unsigned, wrong issuer or algorithm).
+- **Ownership.** The owner of a wallet is taken from the token, never from the request. Only the owner can read a
+  wallet, read its history, top it up or spend from it (403 `NOT_WALLET_OWNER`). Anyone can pay *into* a wallet.
+  The 16 system cash-in wallets belong to `SYSTEM`, so no user can touch them.
+- **Rate limit.** `POST /api/v1/transfers` is limited per user with a token bucket (burst 20, 10 per second):
+  429 `RATE_LIMITED` with a `Retry-After` header. Configure under `wallet.rate-limit.transfers`.
+
+Design reasons, trade-offs and known gaps (no refresh tokens or revocation, no login brute-force protection, the rate
+limit lives in one instance's memory): [DESIGN_DECISIONS.md section 7](docs/DESIGN_DECISIONS.md#7-authentication-ownership-and-rate-limiting-m3).
 
 ## API
 
+All endpoints except register/login need `Authorization: Bearer <token>`.
+
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/api/v1/wallets` | create a wallet (balance starts at 0) |
-| GET | `/api/v1/wallets/{id}` | balance |
-| POST | `/api/v1/wallets/{id}/topups` | `{amount}`, requires `Idempotency-Key` |
-| POST | `/api/v1/transfers` | `{fromWalletId, toWalletId, amount}`, requires `Idempotency-Key` |
-| GET | `/api/v1/wallets/{id}/transactions` | paginated ledger history, `page` (from 0) and `size` (1-100) |
+| POST | `/api/v1/auth/register` | `{username, password}`; public. 201, or 409 `USERNAME_TAKEN` |
+| POST | `/api/v1/auth/login` | `{username, password}`; public. Returns `{accessToken, tokenType, expiresInSeconds}` |
+| POST | `/api/v1/wallets` | create a wallet owned by the caller (no body; balance starts at 0) |
+| GET | `/api/v1/wallets/{id}` | balance (owner only) |
+| POST | `/api/v1/wallets/{id}/topups` | `{amount}`, requires `Idempotency-Key` (owner only) |
+| POST | `/api/v1/transfers` | `{fromWalletId, toWalletId, amount}`, requires `Idempotency-Key`; you must own the source wallet; rate limited |
+| GET | `/api/v1/wallets/{id}/transactions` | paginated ledger history (owner only), `page` (from 0) and `size` (1-100) |
 
 Write endpoints return **201** the first time and **200** with the identical body when the same request is retried.
 
@@ -61,9 +102,14 @@ Errors are [RFC 7807](https://datatracker.ietf.org/doc/html/rfc7807) problem doc
 | 400 | `VALIDATION_ERROR`, `MALFORMED_REQUEST` | bad input |
 | 400 | `IDEMPOTENCY_KEY_MISSING` | write without the header |
 | 400 | `SELF_TRANSFER` | from and to are the same wallet |
+| 401 | `UNAUTHENTICATED`, `TOKEN_INVALID` | no token / bad or expired token |
+| 401 | `INVALID_CREDENTIALS` | wrong username or password at login |
+| 403 | `NOT_WALLET_OWNER` | the wallet belongs to someone else (or the system) |
 | 404 | `WALLET_NOT_FOUND` | unknown wallet |
+| 409 | `USERNAME_TAKEN` | registering a name that exists |
 | 422 | `INSUFFICIENT_FUNDS` | balance too low; nothing is written |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | same key, different request |
+| 429 | `RATE_LIMITED` | too many transfers; see `Retry-After` |
 
 ## How correctness is guaranteed
 
@@ -87,6 +133,8 @@ The reasoning and the alternatives that were rejected are in [docs/DESIGN_DECISI
 Integration tests run against a **real PostgreSQL 16** in Testcontainers (no H2), so locking, constraints and
 isolation behave like production. Docker must be running. They include:
 
+- requests without a valid token, or for someone else's wallet, are refused and change nothing (including 100 simultaneous thieves)
+- the rate limiter admits exactly the burst under 100 simultaneous requests
 - 100 parallel transfers out of one wallet never overdraw it (through the service and over HTTP)
 - opposite transfers (A to B and B to A) and a 3-wallet ring do not deadlock
 - 20 parallel requests with the same key apply exactly once; replays add no rows anywhere
@@ -94,7 +142,7 @@ isolation behave like production. Docker must be running. They include:
   (replay a failure with `./mvnw verify -Dinvariant.seed=<seed>`)
 
 The tests were themselves tested: [DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md#3-how-we-know-the-tests-can-actually-fail-mutation-experiments)
-shows which tests fail when the locking, the unique constraint or the ledger writes are deliberately broken.
+shows which tests fail when the locking, the unique constraint or the ledger writes are deliberately broken; [section 6](docs/DESIGN_DECISIONS.md#6-security-mutation-experiments-ownership-tokens-rate-limit-registration) does the same for ownership, tokens, the rate limit and registration.
 
 ## Performance
 
@@ -184,6 +232,6 @@ Raw results, machine details and the books checks are in [load-test/results](loa
 
 - **M2** – done: seeded random-operations invariant test, 100-way concurrency tests, mutation experiments
   ([docs](docs/DESIGN_DECISIONS.md)) and the load test above
-- **M3** – Spring Security + JWT, ownership checks, rate limiting
+- **M3** – done: Spring Security + JWT, wallet ownership, per-user rate limit on transfers, security mutation experiments ([docs](docs/DESIGN_DECISIONS.md#7-authentication-ownership-and-rate-limiting-m3))
 - **M4** – transactional outbox + Kafka
 - **M5** – metrics dashboard, architecture diagram, load-test results
