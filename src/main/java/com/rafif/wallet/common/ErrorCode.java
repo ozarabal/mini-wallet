@@ -20,6 +20,8 @@ public enum ErrorCode {
     FORBIDDEN(HttpStatus.FORBIDDEN, "Access denied"),
     /** Logged in, but the wallet belongs to someone else (or to the system). */
     NOT_WALLET_OWNER(HttpStatus.FORBIDDEN, "You do not own this wallet"),
+    /** Too many transfer requests from one user in a short time. The Retry-After header says when to try again. */
+    RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Too many requests"),
     WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Wallet not found"),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "Resource not found"),
     /** Other HTTP-level rejections from Spring (wrong method, unsupported media type...). Status comes from Spring. */

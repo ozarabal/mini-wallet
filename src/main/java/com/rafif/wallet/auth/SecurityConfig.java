@@ -1,5 +1,8 @@
 package com.rafif.wallet.auth;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rafif.wallet.ratelimit.TokenBucketRateLimiter;
+import com.rafif.wallet.ratelimit.TransferRateLimitFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -9,6 +12,7 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -25,7 +29,9 @@ class SecurityConfig {
      * The token is checked by the {@code JwtDecoder} from {@link JwtConfig} (signature, expiry, issuer).
      */
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, SecurityErrorHandlers errorHandlers) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, SecurityErrorHandlers errorHandlers,
+                                            TokenBucketRateLimiter transferRateLimiter,
+                                            ObjectMapper objectMapper) throws Exception {
         http
                 // CSRF protects browser sessions that use cookies. We use neither (the token is sent explicitly in a
                 // header), so there is nothing for an attacker's web page to ride on.
@@ -47,7 +53,11 @@ class SecurityConfig {
                         .accessDeniedHandler(errorHandlers))
                 .exceptionHandling(errors -> errors
                         .authenticationEntryPoint(errorHandlers)   // no token at all -> 401
-                        .accessDeniedHandler(errorHandlers));      // logged in but not allowed -> 403
+                        .accessDeniedHandler(errorHandlers))       // logged in but not allowed -> 403
+                // Per-user limit on transfers. It must come after the token check (it needs to know the user)
+                // and, like all of security, before validation and the controllers.
+                .addFilterAfter(new TransferRateLimitFilter(transferRateLimiter, objectMapper),
+                        BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 }

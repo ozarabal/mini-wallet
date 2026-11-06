@@ -2,15 +2,11 @@ package com.rafif.wallet.auth;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rafif.wallet.common.ErrorCode;
-import com.rafif.wallet.common.Problems;
+import com.rafif.wallet.common.ProblemResponses;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -58,11 +54,6 @@ class SecurityErrorHandlers implements AuthenticationEntryPoint, AccessDeniedHan
 
     private void write(HttpServletRequest request, HttpServletResponse response, ErrorCode code, String detail)
             throws IOException {
-        ProblemDetail problem = Problems.of(code, detail);
-        problem.setInstance(URI.create(request.getRequestURI()));
-        response.setStatus(code.status().value());
-        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
-        objectMapper.writeValue(response.getWriter(), problem);
+        ProblemResponses.write(objectMapper, request, response, code, detail);
     }
 }

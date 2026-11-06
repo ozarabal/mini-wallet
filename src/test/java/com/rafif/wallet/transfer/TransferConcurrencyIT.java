@@ -20,11 +20,15 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
 
 /**
  * Concurrency proof for transfers: no overdraft, no deadlock, no lost update. Every test ends by checking the
  * ledger invariants, so "the numbers look right" is backed by "the books balance".
  */
+// These tests are about locking, not rate limiting: one user sends 100 requests at once, so lift the limit
+// (RateLimitIT tests the limiter itself).
+@TestPropertySource(properties = "wallet.rate-limit.transfers.burst=1000")
 class TransferConcurrencyIT extends AbstractIntegrationTest {
 
     private static final int THREADS = 100;

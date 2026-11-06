@@ -24,6 +24,11 @@ wallet:
     issuer: mini-wallet
     ttl: 15m   # how long an access token is valid; there are no refresh tokens in this version
 
+  rate-limit:
+    transfers:        # per user, on POST /api/v1/transfers only
+      burst: 20             # most requests a user can send at once
+      refill-per-second: 10 # steady rate a user can sustain
+
 management:
   endpoints:
     web:
