@@ -9,6 +9,17 @@ spring:
       # How many requests can talk to the database at the same time. 10 is HikariCP's own default,
       # written down here so it is visible and can be changed for experiments (see the load-test notes).
       maximum-pool-size: ${DB_POOL_SIZE:10}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all            # a message counts as sent only when every in-sync replica has it
+      properties:
+        "[enable.idempotence]": true   # the client's own retries can neither duplicate nor reorder messages
+        # Bounded waits. Without these a down broker would block a send for a full minute while the publisher
+        # holds a database transaction open.
+        "[max.block.ms]": 5000
+        "[request.timeout.ms]": 5000
+        "[delivery.timeout.ms]": 10000
   jpa:
     hibernate:
       ddl-auto: validate   # schema is owned by Flyway; Hibernate only checks it matches
@@ -34,6 +45,9 @@ wallet:
       enabled: true     # background job that sends outbox events
       batch-size: 100   # most events per run
       interval: 500ms   # pause between runs
+    kafka:
+      topic: wallet.transactions   # every transfer / top-up event goes here, keyed by wallet id
+      send-timeout: 10s            # how long to wait for the broker to acknowledge one event
 
 management:
   endpoints:
