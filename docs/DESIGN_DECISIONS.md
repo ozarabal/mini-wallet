@@ -299,3 +299,44 @@ Same method as sections 3 and 6: break one safeguard, run the relevant integrati
   tests (`OutboxIT`, `KafkaEventSenderIT`), but I did not mutate the code to prove they fail.
 - Each experiment ran only the integration test classes that concern it (all non-Kafka ones for #9), not the whole
   suite. A final clean `./mvnw clean verify` on the original code is green (see the commit report).
+
+## 9. Transactional outbox and Kafka (M4)
+
+The problem: after money moves, other systems must hear about it. Updating the database and sending to Kafka are two
+systems that cannot commit together. If the request does "commit, then send" and the app dies in between, the money
+moved and nobody was told. If it does "send, then commit" and the commit fails, nobody can take the message back.
+
+| Choice | Why | Alternatives considered |
+|---|---|---|
+| **Transactional outbox**: an `outbox_events` row is inserted in the SAME transaction as the money movement (`Propagation.MANDATORY`, so calling it outside a transaction is an error) | The event exists if and only if the money moved. A later, separate step does the unreliable part (sending). | **Send to Kafka inside the request**: loses or invents events when either side fails. **Kafka transactions / two-phase commit**: do not span PostgreSQL. **Change data capture (Debezium)**: the robust production answer, but it adds a service to run and explain. A polling publisher is simple enough to explain line by line. |
+| **At-least-once delivery.** The publisher marks a row as published only after the broker acknowledged it (`acks=all`, idempotent producer, waits for the acknowledgement) | A crash between "sent" and "marked" resends the event. Duplicates are possible, loss is not. Losing money events is worse than repeating them. | **Mark first, then send** (at-most-once): a crash loses the event for good (mutation 11 shows the test that catches it). **Exactly-once**: Kafka's transactions only cover Kafka-to-Kafka; here the other side is a database, so the consumer's own dedupe is the honest solution. |
+| **Consumers dedupe by `event_id`.** The example consumer does `INSERT ... ON CONFLICT DO NOTHING` on a unique column | The database settles races between two deliveries of the same event; "check, then insert" could not. | Offset tracking alone (does not cover redelivery after a crash between processing and the offset commit). |
+| **Kafka key = the paying wallet** (top-up: the receiving wallet). One partition per key, so one wallet's events keep their order | Per-wallet order is what consumers usually need (a balance history). The outbox `id` is assigned while that wallet's row lock is held, so two transfers of one wallet get ids in the order they were applied. | **Key by transaction id**: spreads load but orders nothing. **One partition**: total order, but no parallelism. |
+| **One publisher at a time, across instances, using a PostgreSQL advisory lock** (`pg_try_advisory_xact_lock`) in the publish transaction | Two publishers working on different rows could send two events of one wallet out of order. The lock is released automatically when the transaction ends, even after a crash. | **`SELECT ... FOR UPDATE SKIP LOCKED`** (my original plan): lets several publishers share the work, which is faster but gives up per-wallet order unless events are also grouped by key. I chose order over throughput. The cost: publishing is single-threaded. |
+| **The publisher keeps one database transaction open while it sends a batch** | The lock and the "mark as published" updates share one transaction, which keeps the logic small. All Kafka waits are bounded (5 s metadata, 10 s delivery, 10 s for the acknowledgement), so a dead broker cannot hold it open for long. | **Claim rows, commit, send outside the transaction, mark in another one**: no long transaction, but it needs a claimed/lease state and a cleanup path for crashes. More moving parts. |
+| **A failed send stops the run** | Later events must not overtake the failed one. | Skipping the failed event and continuing (reorders a wallet's events). |
+| **No user or owner ids in the message** | Once in Kafka a message is copied to many places and cannot be recalled. | Including the owner for convenience. |
+| **Consumer retries a failing message without limit (1 s apart); an unreadable message is skipped** | Spring's default gives up after 10 quick attempts and skips the message, which loses an event in any database outage longer than a moment (mutation 13). A message that can never be parsed would block its partition forever, so that one case is skipped and logged. | **Dead-letter topic**: the proper place to park the unreadable ones; not built (see gaps). |
+| **Topics are auto-created with 3 partitions; no `KafkaAdmin` / `NewTopic` bean** | Keeps application startup independent of the broker, so the many tests that have no broker still start fast. | Declaring the topic in code (cleaner in production, slows or breaks startup without a broker). |
+
+### What it costs (measured)
+
+About 20-30% of throughput in the load test (README, "Performance"): -9% for the extra insert alone, -19% with the
+publisher, -31% with the consumer in the same app (spread scenario). I did not find out exactly why the background
+jobs are that expensive; competing for the 10 database connections and the CPU is the likely cause.
+
+### Known gaps (deliberately out of scope)
+
+- **The outbox table is never cleaned.** Published rows stay forever (about 100 bytes of payload each). A retention
+  job (delete rows published more than N days ago) is needed before real use.
+- **Publishing is single-threaded**, so its ceiling is roughly one acknowledged send after another. It kept up with
+  about 1,700 events/s in the load test; beyond that the backlog would grow. There is no metric for the backlog yet.
+- **The consumer is slow**: one message, one insert, no batching. After a 75 s spread run it needed about 2 more
+  minutes to catch up. More partitions plus several consumer threads, or a batch listener, would fix it.
+- **No dead-letter topic.** An unreadable message is logged and skipped, which is a (small) loss of an event.
+- **Ordering is per wallet only.** Events of different wallets can arrive in any order, and a wallet's events as a
+  *receiver* are ordered only against other events keyed by the same wallet, not against the events where it paid.
+  Changing the number of partitions later changes which partition a key maps to, which breaks ordering across the change.
+- **Transactions made before M4 have no events** (no back-fill).
+- **Kafka has no authentication or encryption** and the broker is published on a local port. Local development only.
+- **One broker, replication factor 1**: `acks=all` here means one copy. The setting is right; the guarantee needs a cluster.

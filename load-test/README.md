@@ -81,3 +81,18 @@ latency shows how long a request takes when the server is saturated, and request
 sustains. They are measurements of one development machine with the app, the database and k6 all sharing it, a
 default connection pool of 10, and Docker Desktop. They are not a production capacity claim. The README of the
 project states the machine they were taken on.
+
+## Switching the background jobs off (to measure what they cost)
+
+Since M4 the app also runs an outbox publisher and a Kafka consumer. To see what each costs, start the stack with
+either switched off (set the variables for every `docker compose` command, as with the rate limit):
+
+| Variable | Default | Effect when `false` |
+|---|---|---|
+| `OUTBOX_PUBLISHER_ENABLED` | true | events stay in the outbox table; nothing is sent to Kafka |
+| `NOTIFICATION_CONSUMER_ENABLED` | true | nothing reads Kafka; `notification_log` stays empty |
+
+With both off, only the outbox insert in the money transaction remains. Results: README, section "Performance".
+After a run with the jobs ON the publisher and consumer may still be working: wait until
+`SELECT count(*) FROM outbox_events WHERE published_at IS NULL` is 0 and `notification_log` has as many rows as
+`outbox_events` before starting the next run, or the leftovers distort it.

@@ -11,6 +11,7 @@ Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Flyway · Testcontainers
 docker compose up --build
 ```
 
+This starts PostgreSQL, a single-node Kafka (KRaft, no ZooKeeper) and the app.
 The API is on http://localhost:8080 and the interactive docs (Swagger UI) on http://localhost:8080/swagger-ui.html.
 Health: `/actuator/health` · Prometheus metrics: `/actuator/prometheus`.
 
@@ -79,6 +80,38 @@ In Swagger UI use the **Authorize** button and paste the token from login.
 Design reasons, trade-offs and known gaps (no refresh tokens or revocation, no login brute-force protection, the rate
 limit lives in one instance's memory): [DESIGN_DECISIONS.md section 7](docs/DESIGN_DECISIONS.md#7-authentication-ownership-and-rate-limiting-m3).
 
+## Events: transactional outbox and Kafka
+
+Every completed top-up or transfer is announced on the Kafka topic `wallet.transactions`, without ever announcing
+something that did not happen or forgetting something that did.
+
+- **The event is written in the same database transaction as the money movement** (an `outbox_events` row). Either
+  both are committed or neither is, so there is no moment where the money moved but the event is lost, or the other
+  way round. Writing to Kafka directly from the request could not guarantee that: the two systems cannot commit together.
+- **A background publisher sends the rows to Kafka**, oldest first, and marks a row as published only after the broker
+  acknowledged it (`acks=all`, idempotent producer). If the app dies in between, the event is sent again: delivery is
+  **at-least-once** (duplicates possible, loss not). Only one publisher runs at a time, across all instances, using a
+  database advisory lock.
+- **Ordering.** A message is keyed by the wallet that pays (a top-up: the wallet that receives), so the events of one
+  wallet arrive in the order they happened. There is no ordering guarantee *between* wallets.
+- **Consumers must ignore duplicates.** The example consumer in this app writes each event to `notification_log`
+  with a unique `event_id` (`INSERT ... ON CONFLICT DO NOTHING`), so a repeated delivery changes nothing. If the
+  database is down it retries the same message until it works. An unreadable message is skipped and logged.
+- Messages contain no user or owner ids (they cannot be taken back once in Kafka).
+
+To watch it work after the curl flow above:
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic wallet.transactions --from-beginning --property print.key=true
+docker compose exec postgres psql -U wallet -d wallet -c "SELECT type, amount, received_at FROM notification_log"
+```
+
+Settings are under `wallet.outbox` and `wallet.notification`; the broker is at `localhost:29092` from your machine
+(no authentication: local development only). Reasons, alternatives, ordering caveats and known gaps:
+[DESIGN_DECISIONS.md section 9](docs/DESIGN_DECISIONS.md#9-transactional-outbox-and-kafka-m4).
+**The cost is real: about 20-30% of throughput in the load test** (see Performance below).
+
 ## API
 
 All endpoints except register/login need `Authorization: Bearer <token>`.
@@ -130,7 +163,7 @@ The reasoning and the alternatives that were rejected are in [docs/DESIGN_DECISI
 ./mvnw verify
 ```
 
-Integration tests run against a **real PostgreSQL 16** in Testcontainers (no H2), so locking, constraints and
+Integration tests run against a **real PostgreSQL 16** (and, for the Kafka tests, a **real Kafka broker**) in Testcontainers (no H2), so locking, constraints and
 isolation behave like production. Docker must be running. They include:
 
 - requests without a valid token, or for someone else's wallet, are refused and change nothing (including 100 simultaneous thieves)
@@ -138,11 +171,12 @@ isolation behave like production. Docker must be running. They include:
 - 100 parallel transfers out of one wallet never overdraw it (through the service and over HTTP)
 - opposite transfers (A to B and B to A) and a 3-wallet ring do not deadlock
 - 20 parallel requests with the same key apply exactly once; replays add no rows anywhere
+- every top-up and transfer produces exactly one outbox event, in order per wallet, rolled back with the money; a duplicated Kafka delivery is processed once; a database outage makes the consumer retry, not skip
 - a seeded random test: 1,000 overlapping top-ups, transfers and retries on 16 threads, then the books must balance
   (replay a failure with `./mvnw verify -Dinvariant.seed=<seed>`)
 
 The tests were themselves tested: [DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md#3-how-we-know-the-tests-can-actually-fail-mutation-experiments)
-shows which tests fail when the locking, the unique constraint or the ledger writes are deliberately broken; [section 6](docs/DESIGN_DECISIONS.md#6-security-mutation-experiments-ownership-tokens-rate-limit-registration) does the same for ownership, tokens, the rate limit and registration.
+shows which tests fail when the locking, the unique constraint or the ledger writes are deliberately broken; [section 6](docs/DESIGN_DECISIONS.md#6-security-mutation-experiments-ownership-tokens-rate-limit-registration) does the same for ownership, tokens, the rate limit and registration, and [section 8](docs/DESIGN_DECISIONS.md#8-outbox-and-kafka-mutation-experiments-m4) for the outbox, publisher and consumer (one mutant survived and led to a new test).
 
 ## Performance
 
@@ -186,6 +220,46 @@ one extra read of the source wallet before the locking query (a primary-key look
 arithmetic operations. (Logging in uses BCrypt,
 which is slow on purpose, but that happens once per session, not per request, and is not in these numbers.) The p99
 latency was not recorded in this round (the k6 export did not include it).
+
+### After adding the outbox, publisher and Kafka consumer (M4)
+
+Every transfer and top-up now also inserts an outbox row. A publisher sends the rows to Kafka and a consumer in the same
+app writes `notification_log`. Method: same machine, same session, pool of 10, rate limit raised, fresh database per
+scenario, three runs each, median shown. "Before" is the previous code (commit `ed506fa`) measured back to back with the
+new code, so it is not the table above (that one came from another session; its spread figure is 3% higher).
+
+| Scenario | Before (M3) | After (M4, everything on) | Change |
+|---|---|---|---|
+| Spread | 1,653 req/s, p95 31 ms, p99 40 ms | **1,145 req/s**, p95 48 ms, p99 72 ms | **-31%** |
+| Hot wallet | 333 req/s, p95 138 ms, p99 158 ms | **261 req/s**, p95 174 ms, p99 200 ms | **-22%** |
+| Top-ups | 1,471 req/s, p95 34 ms, p99 45 ms | **1,158 req/s**, p95 44 ms, p99 58 ms | **-21%** |
+
+Run-to-run spread was small (spread after: 1,141-1,162; hot 257-267; top-ups 1,156-1,184). 0 errors, 0 rate-limited
+responses and 0 books-check violations in all 18 runs. After every M4 run, `outbox_events` and `notification_log` each
+had exactly one row per transaction (e.g. 241,895 of each after the third spread run), so nothing was lost or
+duplicated under load.
+
+**Where the cost comes from** (spread scenario only, three runs each, medians): the same code with the background jobs
+switched off one at a time (`OUTBOX_PUBLISHER_ENABLED`, `NOTIFICATION_CONSUMER_ENABLED`):
+
+| Configuration | req/s | p95 | vs. before |
+|---|---|---|---|
+| M3 code | 1,653 | 31 ms | - |
+| Outbox insert only (publisher and consumer off) | 1,506 | 34 ms | -9% |
+| + publisher sending to Kafka | 1,345 | 38 ms | -19% |
+| + consumer writing `notification_log` | 1,145 | 48 ms | -31% |
+
+**Reading it:**
+- The insert in the money transaction itself is the cheapest part (-9%, one more row and index entry per transaction).
+- The background jobs cost more than the insert. The likely reason is that they compete with the requests for the
+  same 10 database connections and the same CPU (this machine also runs Kafka and k6). I did not isolate which of
+  the two it is.
+- The consumer's share is partly an artifact of running it inside the same app. As a separate service it would not
+  take this app's connections, so the cost to the wallet service is closer to the -19% row.
+- The publisher kept up: right after each run the unpublished backlog was 0. The consumer did not: it was still
+  working through its backlog two minutes after the spread and top-up runs ended (about 25 s after the hot runs),
+  which is lag, not loss.
+- "Likely" and "did not isolate" are honest: this is one machine, with Docker Desktop, and the split was measured once.
 
 ### Two bottlenecks found and measured
 
@@ -233,5 +307,5 @@ Raw results, machine details and the books checks are in [load-test/results](loa
 - **M2** – done: seeded random-operations invariant test, 100-way concurrency tests, mutation experiments
   ([docs](docs/DESIGN_DECISIONS.md)) and the load test above
 - **M3** – done: Spring Security + JWT, wallet ownership, per-user rate limit on transfers, security mutation experiments ([docs](docs/DESIGN_DECISIONS.md#7-authentication-ownership-and-rate-limiting-m3))
-- **M4** – transactional outbox + Kafka
+- **M4** – done: transactional outbox, ordered at-least-once publisher, Kafka, idempotent consumer, mutation experiments ([docs](docs/DESIGN_DECISIONS.md#9-transactional-outbox-and-kafka-m4))
 - **M5** – metrics dashboard, architecture diagram, load-test results

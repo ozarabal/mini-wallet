@@ -54,6 +54,9 @@ services:
       WALLET_RATELIMIT_TRANSFERS_BURST: ${RATE_LIMIT_BURST:-20}
       WALLET_RATELIMIT_TRANSFERS_REFILLPERSECOND: ${RATE_LIMIT_REFILL:-10}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Switches for the background jobs; turn them off to measure what each one costs (see load-test/README.md).
+      WALLET_OUTBOX_PUBLISHER_ENABLED: ${OUTBOX_PUBLISHER_ENABLED:-true}
+      WALLET_NOTIFICATION_CONSUMER_ENABLED: ${NOTIFICATION_CONSUMER_ENABLED:-true}
     ports:
       - "8080:8080"
     depends_on:

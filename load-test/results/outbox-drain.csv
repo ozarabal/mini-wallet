@@ -1,0 +1,10 @@
+Side,Scenario,Run,UnpublishedAtEnd,SecondsToDrain,SecondsToConsumed,OutboxRows,NotificationRows,Transactions
+m4,spread,1,0,0,130,75301,75301,75301
+m4,spread,2,0,0,148,158277,158277,158277
+m4,spread,3,0,0,143,241895,241895,241895
+m4,hot,1,0,0,24,17925,17925,17925
+m4,hot,2,0,0,26,37335,37335,37335
+m4,hot,3,0,0,24,55346,55346,55346
+m4,topup,1,0,0,125,77915,77915,77915
+m4,topup,2,0,0,137,161480,161480,161480
+m4,topup,3,0,0,133,244136,244136,244136
