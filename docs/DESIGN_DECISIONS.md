@@ -265,3 +265,37 @@ experiment changed one line. After all of them, a clean build on the original co
 - **Passwords have a length rule only**, no breached-password check or complexity policy.
 - **Old data**: wallets created before M3 have free-text owners (such as "alice") that match no user id, so they are
   unreachable. There was no production data; a clean database (`docker compose down -v`) is the migration.
+
+## 8. Outbox and Kafka mutation experiments (M4)
+
+Same method as sections 3 and 6: break one safeguard, run the relevant integration tests with
+`-Dmaven.test.failure.ignore=true`, record which tests fail, revert (`git checkout`). Each experiment changed one line.
+
+| # | Deliberate breakage | Caught by |
+|---|---|---|
+| 9 | `OutboxWriter` runs in its own transaction (`REQUIRES_NEW` instead of `MANDATORY`), so the event is no longer written together with the money movement | `OutboxIT.theEventRollsBackWithTheTransactionItIsWrittenIn` and `OutboxIT.theWriterRefusesToRunWithoutATransaction` directly. Also about 60 other tests, see the note below |
+| 10 | Advisory lock never taken (`if (false)` instead of `if (!tryAcquirePublisherLock())`) | `OutboxPublisherIT.anotherPublisherAlreadyRunningMeansThisOneDoesNothing` and `manyPublishersAtOnceStillSendEachEventOnceAndInOrder` (2 tests, the only catchers) |
+| 11 | Event marked published BEFORE it is sent | `OutboxPublisherIT.aFailureStopsTheRunKeepsEarlierEventsMarkedAndRetriesInOrder` (the only catcher): the failed event stayed marked and was never retried, i.e. lost |
+| 12 | Consumer without `ON CONFLICT DO NOTHING` (plain insert) | `NotificationConsumerIT.theSameEventDeliveredTwiceIsProcessedOnce`. It fails by timeout: the duplicate insert violates the unique constraint, the message is retried forever, and the event behind it is never processed |
+| 13 | Consumer error handler gives up after 2 retries instead of retrying without limit (the shape of Spring's default) | `NotificationConsumerIT.whenTheDatabaseFailsTheMessageIsRetriedAndNotLost`: the event was skipped during the outage and never arrived |
+| 14 | `KafkaEventSender` returns without waiting for the broker's acknowledgement | **Survived the first run: no test failed.** I then added `KafkaEventSenderTest` (3 tests with a fake `KafkaTemplate` that controls when the acknowledgement arrives). With the test in place, the mutant fails all 3 and the original passes all 3 |
+
+**What this tells us**
+- Experiments 10, 11, 12, 13 and 14 each have a thin safety net (one or two tests). They are the ones to protect if
+  tests are ever reorganised.
+- Experiment 14 is the useful surprise. The real-broker tests in `KafkaEventSenderIT` would not notice a sender that
+  stops waiting, because a healthy broker acknowledges anyway, and an unreachable broker makes `send()` throw before
+  any waiting starts. Only a fake that delays or withholds the acknowledgement can show the difference.
+- Experiment 9: the 60-odd extra failures are a side effect, not extra coverage. My explanation (not verified in
+  detail) is that the event row has a foreign key to the transaction row, which is still uncommitted when the writer
+  runs in its own transaction, so the insert waits on that row lock until the 30 s test timeouts. A wrong
+  transaction boundary is therefore loud rather than silent, which is good, but the two tests named above are the
+  ones that explain *why*.
+
+**Caveats**
+- Experiment 13 is an approximation of "the default handler" (two quick retries, then skip), not a run with Spring's
+  actual default settings.
+- Not tried: removing the unique constraint `uq_outbox_aggregate`, or changing the Kafka key. Both have direct
+  tests (`OutboxIT`, `KafkaEventSenderIT`), but I did not mutate the code to prove they fail.
+- Each experiment ran only the integration test classes that concern it (all non-Kafka ones for #9), not the whole
+  suite. A final clean `./mvnw clean verify` on the original code is green (see the commit report).
