@@ -175,3 +175,34 @@ must stay under it), and how long each request holds a connection. Here the app 
 more connections also means more competition for it. Pools larger than the number of users (32) cannot help in this
 test, so larger values were not tried. The hot-wallet scenario was not re-run with bigger pools; I expect no gain
 because its limit is the single row lock, but that is an expectation, not a measurement.
+
+## 6. Security mutation experiments (ownership, tokens, rate limit, registration)
+
+Same method as section 3: break one safeguard, run `./mvnw clean verify`, record which tests fail, revert. Each
+experiment changed one line. After all of them, a clean build on the original code is green (126 tests).
+
+| # | Deliberate breakage | Caught by |
+|---|---|---|
+| 5a | Delete the ownership check in `TransferService` (spend from any wallet) | 5 `OwnershipIT` tests: spending someone else's money, taking money out of a cash-in wallet, replaying someone else's idempotency key, the 100-thief race, 404-vs-403 order |
+| 5b | Delete the ownership check in `TopUpService` | `OwnershipIT.anotherUserCannotTopUpMyWalletAndNothingIsWritten` (the only catcher) |
+| 5c | Delete the ownership check in `WalletService.get` (read a balance) | 3 `OwnershipIT` tests (reading a foreign wallet, reading a cash-in wallet, created wallets belong to their creator) |
+| 5d | Delete the ownership check in `LedgerQueryService.history` | 2 `OwnershipIT` tests (foreign history, cash-in wallet) |
+| 6 | Token decoder accepts expired tokens (clock skew of 10 years) | `SecurityIT.anExpiredTokenIsRejected` (the only catcher) |
+| 7a | Rate limiter always allows | 9 `TokenBucketRateLimiterTest` and 5 `RateLimitIT` tests |
+| 7b | Rate limiter uses one shared bucket for every user | 2 unit tests and 5 `RateLimitIT` tests, plus 2 `OwnershipIT` tests incidentally (users ran out of the shared budget) |
+| 8 | Registration does not turn a unique-constraint violation into `USERNAME_TAKEN` | `AuthIT.concurrentRegistrationsOfTheSameUsernameCreateExactlyOneUser` (the only catcher) |
+
+**What this tells us**
+- Every ownership check is covered separately: removing any one of the four fails at least one test. The check in
+  each place matters because a missing one on just one endpoint would still leak or lose money.
+- Experiments 5b, 6 and 8 each have exactly one catching test. Those are the thinnest spots; if one of those tests
+  is ever deleted or weakened, the protection silently disappears.
+- 8 shows the early `existsByUsername` check is not enough: only the database constraint, plus handling its
+  violation, makes concurrent registration of one name safe.
+
+**Caveats**
+- For 7a and 7b the first run stopped after the unit tests failed, so the integration tests never ran. The numbers
+  above are from re-runs with `-Dmaven.test.failure.ignore=true`, so both layers were measured.
+- Not tried: moving the ownership check after the idempotency lookup (to show the key-leak test catches it), and
+  wrong-algorithm or wrong-issuer decoders. `SecurityIT` has tests for those, but I did not mutate the code to prove
+  they fail.
