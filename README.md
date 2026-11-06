@@ -113,6 +113,32 @@ Run-to-run spread was small (spread: 1,780-1,850 req/s; hot: 346-351; top-ups be
 After every run [`verify.sql`](load-test/verify.sql) confirmed the books balance (no negative balance, total money
 unchanged, every balance equal to its ledger, every transaction balanced): 0 violations.
 
+### After adding login, ownership checks and the rate limit (M3)
+
+Every request now carries a JWT that is verified (HMAC signature, expiry, issuer), every transfer or top-up loads the
+wallet and checks its owner, and transfers pass through the per-user rate limiter. The load test was changed to match:
+20 registered users each own 10 wallets, and each virtual user sends its own user's token. The rate limit was raised to
+1,000,000 for the test, otherwise it would (correctly) throttle the test. Same machine, same settings, database pool of
+10, fresh database for each of three runs per scenario; median shown, before = the numbers above.
+
+| Scenario | Before (no auth) | After (auth + ownership + limiter) | Change |
+|---|---|---|---|
+| Spread | 1,795 req/s, p95 28 ms | **1,709 req/s**, p95 29 ms | -5% |
+| Hot wallet | 347 req/s, p95 131 ms | **337 req/s**, p95 135 ms | -3% |
+| Top-ups (16 cash-in wallets) | 1,625 req/s, p95 30 ms | **1,567 req/s**, p95 32 ms | -4% |
+
+Run-to-run spread after: spread 1,692-1,726; hot 333-337; top-ups 1,550-1,567. 0 errors, 0 rate-limited responses and
+0 books-check violations in all nine runs. Raw files: `load-test/results/auth-*`.
+
+**Reading it:** security cost about 3-5% of throughput. Be careful not to over-read that: the earlier numbers came from
+a different session, and sessions on this machine differed by about 5% on their own, so the drop is about the size of
+the noise. What the data supports is "no large cost", not "exactly 4%". It is plausible because the per-request work
+added is small next to a database transaction: verifying an HS256 token is microseconds, the ownership check costs
+one extra read of the source wallet before the locking query (a primary-key lookup, no lock), and the limiter is a few
+arithmetic operations. (Logging in uses BCrypt,
+which is slow on purpose, but that happens once per session, not per request, and is not in these numbers.) The p99
+latency was not recorded in this round (the k6 export did not include it).
+
 ### Two bottlenecks found and measured
 
 **1. Top-ups queued on a single row (fixed: 4.9x).** The first load test showed top-ups at ~350 req/s against ~1,800

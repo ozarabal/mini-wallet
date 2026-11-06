@@ -24,6 +24,10 @@ services:
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       # Dev-only default so `docker compose up` just works. Set JWT_SECRET to your own value for anything real.
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret-change-me}
+      # Per-user limit on POST /transfers. Defaults match application.yml; raise them for load tests,
+      # otherwise the limiter (correctly) throttles the test.
+      WALLET_RATELIMIT_TRANSFERS_BURST: ${RATE_LIMIT_BURST:-20}
+      WALLET_RATELIMIT_TRANSFERS_REFILLPERSECOND: ${RATE_LIMIT_REFILL:-10}
     ports:
       - "8080:8080"
     depends_on:
