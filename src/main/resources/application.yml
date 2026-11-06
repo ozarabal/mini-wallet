@@ -11,8 +11,11 @@ spring:
       maximum-pool-size: ${DB_POOL_SIZE:10}
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: notification-service   # offsets are stored per group, so a restart continues where it stopped
+      auto-offset-reset: earliest      # a brand-new group reads the topic from the start
     producer:
-      acks: all            # a message counts as sent only when every in-sync replica has it
+      acks: all           # a message counts as sent only when every in-sync replica has it
       properties:
         "[enable.idempotence]": true   # the client's own retries can neither duplicate nor reorder messages
         # Bounded waits. Without these a down broker would block a send for a full minute while the publisher
@@ -48,6 +51,10 @@ wallet:
     kafka:
       topic: wallet.transactions   # every transfer / top-up event goes here, keyed by wallet id
       send-timeout: 10s            # how long to wait for the broker to acknowledge one event
+
+  notification:
+    consumer:
+      enabled: true     # Kafka listener that writes notification_log
 
 management:
   endpoints:
