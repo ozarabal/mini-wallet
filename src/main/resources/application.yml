@@ -29,6 +29,12 @@ wallet:
       burst: 20             # most requests a user can send at once
       refill-per-second: 10 # steady rate a user can sustain
 
+  outbox:
+    publisher:
+      enabled: true     # background job that sends outbox events
+      batch-size: 100   # most events per run
+      interval: 500ms   # pause between runs
+
 management:
   endpoints:
     web:

@@ -46,8 +46,7 @@ Then a k6 load test; record requests/sec and p95 latency in the README.
 
 **M5 – Polish.** Micrometer metrics (transfer count, failures, latency) with a Grafana dashboard in Compose, architecture diagram, `docs/DESIGN_DECISIONS.md`, README with load-test numbers and a "how to run in one command" section.
 
-## Definition of done for the CV
+## Definition of done
 - `docker compose up` starts everything; README shows curl examples
 - Tests prove the invariants above
 - README states real measured numbers, not guesses
-- You can explain: why ordered locking prevents deadlock, why idempotency uses a DB unique constraint, why money is `long`, and why the outbox is needed

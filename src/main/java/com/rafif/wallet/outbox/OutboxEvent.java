@@ -58,6 +58,10 @@ public class OutboxEvent {
         return e;
     }
 
+    void markPublished(Instant when) {
+        this.publishedAt = when.truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+    }
+
     public Long getId() {
         return id;
     }

@@ -35,8 +35,7 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("wallet.jwt.secret", () -> TEST_JWT_SECRET);
-    }
+        registry.add("wallet.jwt.secret", () -> TEST_JWT_SECRET);    }
 
     // private: subclasses have their own jdbc fields and must not clash with these
     @Autowired
